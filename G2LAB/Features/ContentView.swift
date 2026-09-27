@@ -52,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.4.1 b8")
+                Text("ACCESSIBILITY ENGINE  •  v0.4.2 b9")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -190,7 +190,7 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
 
-            Text("Direct G2 display: 5401/5402 • right lens primary. G2 microphone transport is still being reverse-engineered; 6402 is display, not mic.")
+            Text("Direct G2 mic is hardware-proven: LEFT 6402 → LC3 → PCM. This build focuses on streaming Italian ASR; direct gesture decoding is still being mapped.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -281,6 +281,14 @@ struct ContentView: View {
                     Text("MIC: \(g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
                     Text("PCM: \(g2.pcmActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
                     Text(String(format: "LEVEL: %.3f", g2.micLevel))
+                    Text("ASR MODEL: \(g2.italianModelState)")
+                    Text("ASR PCM IN: \(g2.italianPCMIn)")
+                    Text("ASR QUEUED: \(g2.italianQueued)")
+                    Text("ASR PROCESSED: \(g2.italianProcessed)")
+                    Text("ASR DROPPED: \(g2.italianDropped)")
+                    Text("PARTIALS: \(g2.italianPartials) • FINALS: \(g2.italianFinals)")
+                    Text(String(format: "INFERENCE: %.0f ms", g2.italianInferenceMs))
+                    Text("EVENT PROBE: \(g2.gestureProbeCount)")
                 }
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
 
