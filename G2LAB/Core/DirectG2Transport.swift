@@ -584,10 +584,13 @@ final class DirectG2Transport: NSObject {
         micAckDeadline?.cancel()
         micAckDeadline = nil
         pendingEnterMessageIDs.removeAll()
-        if micOpenedForCurrentConnection, isProtocolReady { sendMicControl(status: 3) }
+        let canSendExit = micOpenedForCurrentConnection && isProtocolReady
+        if canSendExit { sendMicControl(status: 3) }
         micOpenedForCurrentConnection = false
         micAckedForCurrentConnection = false
-        onLog?("MIC CLOSE: CTRL EXIT queued L+R")
+        onLog?(canSendExit
+            ? "MIC CLOSE: CTRL EXIT queued L+R"
+            : "MIC CLOSE: no active connection to close")
         onMicControlState?("IDLE")
     }
 
