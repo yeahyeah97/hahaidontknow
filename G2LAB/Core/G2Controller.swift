@@ -20,8 +20,12 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     private let italian = OfflineItalianRecognizer()
 
     private var reconnectTask: Task<Void, Never>?
+    private var captionHoldTask: Task<Void, Never>?
     private var hasConnectedOnce = false
     private var lastHudPush = Date.distantPast
+    private var committedCaptionText = ""
+    private var currentPartialText = ""
+    private var lastRenderedCaption = ""
 
     private let menuItems = [
         "ITALIAN LIVE CAPTIONS",
@@ -36,9 +40,18 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
         italian.onText = { [weak self] text, isFinal in
             guard let self else { return }
-            self.captionText = text
+
+            if isFinal {
+                self.commitFinalCaption(text)
+                self.currentPartialText = ""
+            } else {
+                self.currentPartialText = text
+            }
+
+            let combined = self.combinedCaptionText()
+            self.captionText = combined
             self.captionStatus = isFinal ? "ITALIAN OFFLINE • FINAL" : "ITALIAN OFFLINE • LIVE"
-            self.pushCaptionToHUD(text, force: isFinal)
+            self.pushCaptionToHUD(combined, force: isFinal)
         }
 
         log("G2 LAB v0.2 boot")
@@ -141,6 +154,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             log("Italian offline captions ON")
         } else {
             italian.stop()
+            captionHoldTask?.cancel()
+            captionHoldTask = nil
             captionStatus = "ITALIAN OFFLINE • IDLE"
             log("Italian offline captions OFF")
         }
@@ -172,14 +187,14 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         switch name {
         case "double_tap":
             if menuVisible {
-                activateMenuItem()
+                closeMenu()
             } else {
                 openMenu()
             }
 
         case "single_tap":
             if menuVisible {
-                closeMenu()
+                activateMenuItem()
             }
 
         case "swipe_up":
@@ -201,18 +216,18 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         switch menuSelection {
         case 0:
             toggleCaptions()
+            renderMenu()
         case 1:
             toggleMic()
+            renderMenu()
         case 2:
+            menuVisible = false
             clearHUD()
         case 3:
+            menuVisible = false
             showConnectionStatus()
         default:
             break
-        }
-
-        if menuVisible {
-            renderMenu()
         }
     }
 
@@ -247,6 +262,33 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         }
     }
 
+    private func commitFinalCaption(_ text: String) {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+
+        if committedCaptionText.isEmpty {
+            committedCaptionText = cleaned
+        } else {
+            committedCaptionText += " " + cleaned
+        }
+
+        if committedCaptionText.count > 700 {
+            committedCaptionText = String(committedCaptionText.suffix(700))
+        }
+    }
+
+    private func combinedCaptionText() -> String {
+        let partial = currentPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if committedCaptionText.isEmpty {
+            return partial
+        }
+        if partial.isEmpty {
+            return committedCaptionText
+        }
+        return committedCaptionText + " " + partial
+    }
+
     private func pushCaptionToHUD(_ text: String, force: Bool) {
         guard captionsEnabled, !menuVisible, !text.isEmpty else { return }
 
@@ -257,12 +299,49 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         lastHudPush = now
 
         let visible = String(text.suffix(220))
+        lastRenderedCaption = visible
+        sendCaptionHUD(visible)
+        restartCaptionHoldTimer()
+    }
+
+    private func sendCaptionHUD(_ visible: String) {
+        guard captionsEnabled, !menuVisible, !visible.isEmpty else { return }
 
         Task {
             do {
                 try await sdk.displayText(visible, x: 0, y: 0, size: 22)
             } catch {
                 log("CAPTION HUD ERROR: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func restartCaptionHoldTimer() {
+        captionHoldTask?.cancel()
+
+        let snapshot = lastRenderedCaption
+        guard !snapshot.isEmpty else { return }
+
+        captionHoldTask = Task { [weak self] in
+            guard let self else { return }
+
+            // Keep the last phrase alive on-glass while the speaker pauses.
+            for _ in 0..<4 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                guard self.captionsEnabled, !self.menuVisible else { return }
+                self.sendCaptionHUD(snapshot)
+            }
+
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            guard self.captionsEnabled, !self.menuVisible else { return }
+
+            do {
+                try await self.sdk.clearDisplay()
+                self.log("Caption HUD idle clear after 5s — transcript retained")
+            } catch {
+                self.log("CAPTION CLEAR ERROR: \(error.localizedDescription)")
             }
         }
     }
