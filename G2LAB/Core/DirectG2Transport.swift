@@ -6,6 +6,12 @@ import CoreBluetooth
 final class DirectG2Transport: NSObject {
     enum Side: String { case left = "L", right = "R" }
 
+    enum InputEvent {
+        case listSelect(name: String, index: Int)
+        case scroll(name: String, direction: Int)
+        case gesture(code: Int)
+    }
+
     final class Lens {
         let side: Side
         let peripheral: CBPeripheral
@@ -29,6 +35,7 @@ final class DirectG2Transport: NSObject {
     var onAudioDiagnostics: ((_ total: Int, _ valid205: Int, _ invalid: Int) -> Void)?
     var onMicControlState: ((String) -> Void)?
     var onLinkStateChanged: ((String) -> Void)?
+    var onInputEvent: ((InputEvent) -> Void)?
 
     private var central: CBCentralManager?
     private var lenses: [UUID: Lens] = [:]
@@ -125,6 +132,74 @@ final class DirectG2Transport: NSObject {
             return
         }
         enableMicPath()
+    }
+
+
+    /// Native EvenHub list page. The firmware owns focus/scroll and reports
+    /// selected rows on e0-01, instead of the phone faking menu navigation.
+    func openNativeMenu(title: String, items: [String]) {
+        guard isProtocolReady else { onLog?("MENU: link not ready"); return }
+        guard !items.isEmpty else { return }
+
+        send(serviceHi: 0x81, serviceLo: 0x20, payload: [0x08,0x01,0x10,nextMsgID(),0x1A,0x00])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self else { return }
+            self.send(serviceHi: 0x04, serviceLo: 0x20, payload: [
+                0x08,0x01,0x10,self.nextMsgID(),0x1A,0x08,0x08,0x01,0x10,0x01,0x18,0x07,0x28,0x01
+            ])
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            guard let self else { return }
+            var region = Self.hex("08021051228a0108011215080210904e1d00d8ad4525000000002800300038001215080310d00f1d00007a4425000000002800300038001214080410001d0000000025000000002800300038001214080510001d0000b842250000ae422800300038001214080610001d0000c042250000c4422800300038001214080910001d0000000025000000002800300038001800")
+            if region.count > 3 { region[3] = self.nextMsgID() }
+            self.send(serviceHi: 0x0E, serviceLo: 0x20, payload: region)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { [weak self] in
+            guard let self, self.isProtocolReady else { return }
+            self.sendEvenHubPayload(self.makeNativeMenuPayload(title: title, items: items))
+            self.onLog?("MENU: native list launched rows=\(items.count)")
+        }
+    }
+
+    func closeNativeMenu() {
+        guard isProtocolReady else { return }
+        let inner = Self.vfield(1, 0)
+        var payload = Self.vfield(1, 9)
+        payload += Self.vfield(2, Int(nextMsgID()))
+        payload += Self.lfield(11, inner)
+        sendEvenHubPayload(payload)
+        onLog?("MENU: native page closed")
+    }
+
+    private func makeNativeMenuPayload(title: String, items: [String]) -> [UInt8] {
+        let header = Self.textContainer(x: 40, y: 0, w: 504, h: 38, id: 1,
+                                        name: "menu-header", eventCapture: false,
+                                        padding: 5, text: title)
+        let list = Self.listContainer(x: 60, y: 43, w: 456, h: 245, id: 2,
+                                      name: "menu-list", itemWidth: 456,
+                                      items: items, eventCapture: true)
+        var wrapper = Self.vfield(1, 2)
+        wrapper += Self.lfield(2, list)
+        wrapper += Self.lfield(3, header)
+        wrapper += Self.vfield(5, 11417) // catalog token proven on direct cold-launch paths
+
+        var payload = Self.vfield(1, 0)
+        payload += Self.vfield(2, Int(nextMsgID()))
+        payload += Self.lfield(3, wrapper)
+        return payload
+    }
+
+    private func sendEvenHubPayload(_ payload: [UInt8]) {
+        guard let target = lens(.right), let write = target.commandWrite else {
+            onLog?("MENU: R command channel unavailable")
+            return
+        }
+        let frames = Self.evenHubPackets(seq: nextTransportSeq(), payload: Data(payload))
+        for (index, frame) in frames.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.012) {
+                target.peripheral.writeValue(frame, for: write, type: .withoutResponse)
+            }
+        }
     }
 
     func showText(_ text: String, final: Bool = true) {
@@ -715,6 +790,144 @@ final class DirectG2Transport: NSObject {
         return payload
     }
 
+    private static func key(_ field: Int, _ wire: Int) -> [UInt8] {
+        varint(UInt64((field << 3) | wire))
+    }
+
+    private static func vfield(_ field: Int, _ value: Int) -> [UInt8] {
+        key(field, 0) + varint(UInt64(value))
+    }
+
+    private static func lfield(_ field: Int, _ body: [UInt8]) -> [UInt8] {
+        key(field, 2) + varint(UInt64(body.count)) + body
+    }
+
+    private static func sfield(_ field: Int, _ value: String) -> [UInt8] {
+        lfield(field, Array(value.utf8))
+    }
+
+    private static func textContainer(x: Int, y: Int, w: Int, h: Int, id: Int,
+                                      name: String, eventCapture: Bool,
+                                      padding: Int, text: String) -> [UInt8] {
+        var out: [UInt8] = []
+        out += vfield(1, x); out += vfield(2, y); out += vfield(3, w); out += vfield(4, h)
+        out += vfield(5, 0); out += vfield(8, padding)
+        out += vfield(9, id); out += sfield(10, name)
+        out += vfield(11, eventCapture ? 1 : 0); out += sfield(12, text)
+        return out
+    }
+
+    private static func listContainer(x: Int, y: Int, w: Int, h: Int, id: Int,
+                                      name: String, itemWidth: Int, items: [String],
+                                      eventCapture: Bool) -> [UInt8] {
+        var item: [UInt8] = []
+        item += vfield(1, items.count); item += vfield(2, itemWidth); item += vfield(3, 1)
+        for value in items { item += sfield(4, value) }
+
+        var out: [UInt8] = []
+        out += vfield(1, x); out += vfield(2, y); out += vfield(3, w); out += vfield(4, h)
+        out += vfield(5, 0); out += vfield(8, 0)
+        out += vfield(9, id); out += sfield(10, name)
+        out += lfield(11, item); out += vfield(12, eventCapture ? 1 : 0)
+        return out
+    }
+
+    private static func evenHubPackets(seq: UInt8, payload: Data) -> [Data] {
+        let maxChunk = 232
+        let crc = crc16(payload)
+        let total = max(1, Int(ceil(Double(payload.count) / Double(maxChunk))))
+        var frames: [Data] = []
+        var offset = 0
+        for serial in 1...total {
+            let end = min(offset + maxChunk, payload.count)
+            let chunk = payload.subdata(in: offset..<end)
+            let isFinal = serial == total
+            var frame = Data([0xAA,0x21,seq,UInt8(chunk.count + (isFinal ? 2 : 0)),
+                              UInt8(total),UInt8(serial),0xE0,0x20])
+            frame.append(chunk)
+            if isFinal {
+                frame.append(UInt8(crc & 0xFF))
+                frame.append(UInt8((crc >> 8) & 0xFF))
+            }
+            frames.append(frame)
+            offset = end
+        }
+        return frames
+    }
+
+    private static func decodeEvenHubInput(payload: Data) -> InputEvent? {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 5, bytes[0] == 0x08, bytes[1] == 0x02, bytes[2] == 0x6A else { return nil }
+        var index = 3
+        guard let f13Length = readVarint(bytes, index: &index),
+              f13Length <= UInt64(bytes.count - index) else { return nil }
+        let end = index + Int(f13Length)
+        guard index < end else { return nil }
+        let subType = bytes[index]; index += 1
+        guard let subLength = readVarint(bytes, index: &index),
+              subLength <= UInt64(end - index) else { return nil }
+        let subEnd = index + Int(subLength)
+
+        if subType == 0x0A {
+            var name = ""; var selected = 0
+            while index < subEnd {
+                let tag = bytes[index]; index += 1
+                switch tag {
+                case 0x08: _ = readVarint(bytes, index: &index)
+                case 0x12:
+                    guard let n = readVarint(bytes, index: &index), n <= UInt64(subEnd - index) else { return nil }
+                    name = String(bytes: bytes[index..<(index + Int(n))], encoding: .utf8) ?? ""
+                    index += Int(n)
+                case 0x20:
+                    guard let v = readVarint(bytes, index: &index) else { return nil }
+                    selected = Int(v)
+                default: return nil
+                }
+            }
+            return .listSelect(name: name, index: selected)
+        }
+
+        if subType == 0x12 {
+            var name = ""; var direction = -1
+            while index < subEnd {
+                let tag = bytes[index]; index += 1
+                switch tag {
+                case 0x08: _ = readVarint(bytes, index: &index)
+                case 0x12:
+                    guard let n = readVarint(bytes, index: &index), n <= UInt64(subEnd - index) else { return nil }
+                    name = String(bytes: bytes[index..<(index + Int(n))], encoding: .utf8) ?? ""
+                    index += Int(n)
+                case 0x18:
+                    guard let v = readVarint(bytes, index: &index) else { return nil }
+                    direction = Int(v)
+                default: return nil
+                }
+            }
+            return .scroll(name: name, direction: direction)
+        }
+
+        if subType == 0x1A {
+            var code = 0
+            if index < subEnd, bytes[index] == 0x08 {
+                index += 1
+                if let v = readVarint(bytes, index: &index) { code = Int(v) }
+            }
+            return .gesture(code: code)
+        }
+        return nil
+    }
+
+    private static func readVarint(_ bytes: [UInt8], index: inout Int) -> UInt64? {
+        var result: UInt64 = 0; var shift: UInt64 = 0
+        while index < bytes.count, shift < 64 {
+            let byte = bytes[index]; index += 1
+            result |= UInt64(byte & 0x7F) << shift
+            if byte & 0x80 == 0 { return result }
+            shift += 7
+        }
+        return nil
+    }
+
     private static func packet(
         seq: UInt8,
         serviceHi: UInt8,
@@ -1008,6 +1221,10 @@ extension DirectG2Transport: CBPeripheralDelegate {
             onPacket?(lens.side, data)
             let serviceHi = data.count > 6 ? data[6] : 0
             let serviceLo = data.count > 7 ? data[7] : 0
+            if serviceHi == 0xE0, serviceLo == 0x01, data.count > 10,
+               let event = Self.decodeEvenHubInput(payload: Data(data[8..<(data.count - 2)])) {
+                onInputEvent?(event)
+            }
             let incomingMessageID = Self.protobufMessageID(in: data)
             if serviceHi == 0x07, serviceLo == 0x20 {
                 let message = incomingMessageID.map(String.init) ?? "?"

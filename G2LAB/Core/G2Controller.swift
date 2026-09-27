@@ -1,629 +1,308 @@
 import Foundation
-import MentraBluetoothSDK
 
 @MainActor
-final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate {
-    @Published var status = "IDLE"
-    @Published var devices: [Device] = []
-    @Published var logs: [String] = []
-    @Published var micLevel: Double = 0
-    @Published var micPacketCount: Int = 0
-    @Published var micEnabled = false
+final class G2Controller: ObservableObject {
+    @Published var status = "DISCONNECTED"
+    @Published var linkReady = false
+    @Published var leftReady = false
+    @Published var rightReady = false
+    @Published var captionsEnabled = false
     @Published var micActive = false
     @Published var pcmActive = false
-    @Published var asrLive = false
-    @Published var linkDebugState = "CONNECTING"
-    @Published var audioNotificationCount = 0
-    @Published var audio205Count = 0
-    @Published var audioInvalidCount = 0
-    @Published var micControlState = "IDLE"
-    @Published var gestureProbeCount = 0
-    private var lc3: G2LC3Decoder?
-    @Published var batteryLevel: Int? = nil
-    @Published var batteryCharging = false
-    @Published var signalDbm: Int? = nil
-
-    @Published var menuVisible = false
-    @Published var menuSelection = 0
-
-    @Published var captionsEnabled = false
+    @Published var micLevel = 0.0
     @Published var captionText = ""
-    @Published var captionStatus = "ITALIAN OFFLINE • IDLE"
+    @Published var menuVisible = false
+    @Published var lastInput = "—"
+    @Published var micPackets = 0
+    @Published var validAudioPackets = 0
+    @Published var invalidAudioPackets = 0
+    @Published var logs: [String] = []
 
-    private lazy var sdk: MentraBluetoothSDK = {
-        let value = MentraBluetoothSDK(configuration: .default)
-        value.delegate = self
-        return value
-    }()
+    let models: WhisperModelManager
 
-    private lazy var italian: StreamingItalianRecognizer = {
-        let recognizer = StreamingItalianRecognizer()
-        recognizer.onText = { [weak self] text, isFinal in
-            guard let self, self.captionsEnabled else { return }
-            self.asrLive = true
+    private let direct = DirectG2Transport()
+    private var decoder: G2LC3Decoder?
+    private var hudTask: Task<Void, Never>?
+    private var pendingHUDText: String?
 
-            if isFinal {
-                self.commitFinalCaption(text)
-                self.currentPartialText = ""
-            } else {
-                self.currentPartialText = text
-            }
-
-            let combined = self.combinedCaptionText()
-            self.captionText = combined
-            self.captionStatus = isFinal ? "ITALIAN OFFLINE • FINAL" : "ITALIAN OFFLINE • LIVE"
-            self.pushCaptionToHUD(combined, force: isFinal)
-        }
-        return recognizer
-    }()
-
-    private var direct: DirectG2Transport?
-    private var directLeftReady = false
-    private var directRightReady = false
-
-    private var reconnectTask: Task<Void, Never>?
-    private var captionHoldTask: Task<Void, Never>?
-    private var pendingHUDTask: Task<Void, Never>?
-    private var hasConnectedOnce = false
-    private var lastHudPush = Date.distantPast
-    private var committedCaptionText = ""
-    private var currentPartialText = ""
-    private var lastRenderedCaption = ""
-
-    var linkReady: Bool {
-        direct?.isProtocolReady == true
+    init(models: WhisperModelManager) {
+        self.models = models
+        wireTransport()
+        wireWhisper()
+        log("G2 ACCESS v0.5.0 • native menu + downloadable Whisper")
     }
 
-    // Read-only ASR diagnostics for the SwiftUI diagnostics panel.
-    var italianModelState: String { italian.modelState }
-    var italianPCMIn: Int { italian.pcmBuffersIn }
-    var italianQueued: Int { italian.queuedChunks }
-    var italianProcessed: Int { italian.processedChunks }
-    var italianDropped: Int { italian.droppedPackets }
-    var italianPartials: Int { italian.partialCount }
-    var italianFinals: Int { italian.finalCount }
-    var italianInferenceMs: Double { italian.lastInferenceMs }
-    var italianAppleState: String { italian.appleFallbackState }
-
-    private let menuItems = [
-        "ITALIAN LIVE CAPTIONS",
-        "MIC TOGGLE",
-        "CLEAR HUD",
-        "CONNECTION STATUS",
-        "CLOSE MENU"
-    ]
-
-    override init() {
-        super.init()
-        // Important: launch does not construct Mentra, Sherpa/ONNX, or CoreBluetooth.
-        log("G2 LAB v0.4.3 build 10 — cold launch safe")
+    deinit {
+        hudTask?.cancel()
     }
 
-
-    private func startDirectTransportIfNeeded() {
-        guard direct == nil else {
-            direct?.start()
-            return
-        }
-
-        log("DIRECT: creating clean-room CoreBluetooth transport")
-        let transport = DirectG2Transport()
-
-        transport.onLog = { [weak self] message in
-            Task { @MainActor in self?.log(message) }
-        }
-
-        transport.onReadyChanged = { [weak self] left, right in
-            Task { @MainActor in
-                guard let self else { return }
-                self.directLeftReady = left
-                self.directRightReady = right
-                self.log("DIRECT: L=\(left ? "READY" : "—") R=\(right ? "READY" : "—")")
-                if left || right {
-                    self.status = left && right ? "DIRECT GATT L+R" : "DIRECT GATT PARTIAL"
-                }
-            }
-        }
-
-        transport.onPacket = { [weak self] side, data in
-            guard data.count >= 8 else { return }
-            let svc = String(format: "%02X-%02X", data[6], data[7])
-            var message = "?"
-            if data.count > 10, let tag = data[8..<(data.count - 2)].firstIndex(of: 0x10),
-               tag + 1 < data.count - 2 {
-                message = String(data[tag + 1])
-            }
-            Task { @MainActor in
-                guard let self else { return }
-                self.log("DIRECT RX \(side.rawValue) svc=\(svc) msg=\(message) size=\(data.count)")
-                // Gesture decoder is intentionally not guessed yet. Preserve compact
-                // command/event metadata so physical tap/swipe tests can be mapped.
-                if svc != "80-00" && svc != "E0-20" && svc != "07-00" && svc != "07-20" {
-                    self.gestureProbeCount += 1
-                }
-            }
-        }
-
-        transport.onMicPacket = { [weak self] data in
-            // CoreBluetooth uses the main queue; process the 50-ms packet immediately.
-            MainActor.assumeIsolated { self?.acceptMicPacket(data) }
-        }
-        transport.onMicSessionInterrupted = { [weak self] in
-            MainActor.assumeIsolated { self?.resetMicEvidenceForReconnect() }
-        }
-        transport.onAudioDiagnostics = { [weak self] total, valid, invalid in
-            MainActor.assumeIsolated {
-                self?.audioNotificationCount = total
-                self?.audio205Count = valid
-                self?.audioInvalidCount = invalid
-            }
-        }
-        transport.onMicControlState = { [weak self] state in
-            MainActor.assumeIsolated { self?.micControlState = state }
-        }
-        transport.onLinkStateChanged = { [weak self] state in
-            MainActor.assumeIsolated {
-                self?.linkDebugState = state
-                self?.status = "DIRECT \(state)"
-            }
-        }
-
-        transport.onProtocolReady = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.status = "DIRECT G2 READY"
-                self.linkDebugState = "VERIFIED"
-                self.log("DIRECT: protocol init complete")
-                if self.micEnabled {
-                    self.direct?.setMicEnabled(true)
-                }
-            }
-        }
-
-        direct = transport
-        transport.start()
-    }
-
-    func backgroundRefreshPulse() {
-        log("APP: BACKGROUND REFRESH")
-        direct?.start()
-    }
-
-    func appDidBecomeActive() {
-        log("APP: ACTIVE")
-        startLink()
-    }
-
-    func startLink() {
-        if direct == nil {
-            status = "DIRECT STARTING"
-            log("DIRECT: auto-start requested")
-            startDirectTransportIfNeeded()
-        } else {
-            direct?.start()
-        }
-    }
-
-    func appDidEnterBackground() {
-        stopAudioSession()
-        log("APP: BACKGROUND — foreground caption session stopped")
-    }
-
-    func appWillResignActive() {
-        log("APP: INACTIVE")
-    }
-
-    func scan() {
-        devices.removeAll()
-        micPacketCount = 0
-        micLevel = 0
-        status = "DIRECT SCANNING"
-        log("DIRECT: scan requested — Mentra transport bypassed")
-        startDirectTransportIfNeeded()
-    }
-
-    func connect(_ device: Device) {
-        status = "DIRECT CONNECTING"
-        linkDebugState = "CONNECTING"
-        log("DIRECT: manual reconnect requested for \(device.name)")
-        startDirectTransportIfNeeded()
+    func connect() {
+        status = "CONNECTING"
+        log("CONNECT: starting direct dual-lens G2 transport")
+        direct.start()
     }
 
     func disconnect() {
-        stopAudioSession()
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        hasConnectedOnce = false
-        direct?.stop()
-        direct = nil
+        stopCaptions()
+        menuVisible = false
+        direct.stop()
         status = "DISCONNECTED"
-        log("DIRECT: disconnect requested")
+        linkReady = false
+        leftReady = false
+        rightReady = false
     }
 
-    func showProof() {
-        guard let direct, direct.isProtocolReady else {
-            log("DIRECT HUD TEST BLOCKED: no verified G2 link")
-            return
-        }
-        direct.showText("G2 LAB\nDIRECT LINK ACTIVE")
-        log("DIRECT HUD proof queued")
-    }
-
-    func clearHUD() {
-        guard let direct, direct.isProtocolReady else {
-            log("DIRECT CLEAR BLOCKED: no verified G2 link")
-            return
-        }
-        direct.clearText()
-        log("DIRECT HUD clear queued")
-    }
-
-    func toggleMic() {
-        setMic(!micEnabled)
-    }
-
-    func toggleCaptions() {
-        if captionsEnabled { stopAudioSession(); return }
-        guard linkReady, direct?.micAvailable == true else {
-            captionStatus = "DIRECT G2 + LEFT AUDIO NOTIFY REQUIRED"
-            return
-        }
-        guard prepareAudioSession() else { return }
-        captionsEnabled = true
-        currentPartialText = ""
-        italian.resetSession()
-        italian.start()
-        captionStatus = "WAITING FOR G2 AUDIO"
-        direct?.setMicEnabled(true)
-    }
-
-    private func prepareAudioSession() -> Bool {
-        guard let decoder = G2LC3Decoder() else {
-            captionStatus = "LC3 INITIALIZATION FAILED"
-            return false
-        }
-        lc3 = decoder
-        micEnabled = true
-        micActive = false
-        pcmActive = false
-        asrLive = false
-        micPacketCount = 0
-        micLevel = 0
-        return true
-    }
-
-    private func stopAudioSession() {
-        direct?.setMicEnabled(false)
-        pendingHUDTask?.cancel()
-        pendingHUDTask = nil
-        direct?.cancelCaptionUpdates()
-        let wasCaptioning = captionsEnabled
-        captionsEnabled = false
-        micEnabled = false
-        micActive = false
-        pcmActive = false
-        asrLive = false
-        lc3 = nil
-        micLevel = 0
-        if wasCaptioning {
-            commitFinalCaption(currentPartialText)
-            currentPartialText = ""
-            captionText = combinedCaptionText()
-            italian.stop()
-        }
-        captionHoldTask?.cancel()
-        captionHoldTask = nil
-        captionStatus = "ITALIAN OFFLINE • IDLE"
-    }
-
-    private func resetMicEvidenceForReconnect() {
-        micActive = false
-        pcmActive = false
-        asrLive = false
-        micLevel = 0
-        micPacketCount = 0
-        guard micEnabled else {
-            lc3 = nil
-            micControlState = "IDLE"
-            return
-        }
-        micControlState = "WAITING"
-        lc3 = G2LC3Decoder()
+    func toggleCaptions() async {
         if captionsEnabled {
-            italian.resetSession()
-            captionStatus = "RECOVERING G2 MICROPHONE"
+            stopCaptions()
+        } else {
+            await startCaptions()
         }
     }
 
-    private func acceptMicPacket(_ data: Data) {
-        guard micEnabled, let decoder = lc3 else { return }
-        if data.count == 205 { micActive = true }
-        let pcm = decoder.decode(data)
-        micPacketCount = decoder.packets
-        pcmActive = decoder.decodedFrames > 0
-        if let pcm {
-            micLevel = min(1, decoder.rms * 4)
-            if captionsEnabled {
-                italian.appendPCM16(pcm)
-                if !asrLive { captionStatus = "PCM ACTIVE • " + italian.status }
-            }
+    func startCaptions() async {
+        guard linkReady else {
+            captionText = "Connect the G2 first."
+            return
         }
-        if decoder.packets == 1 || decoder.packets % 20 == 0 {
-            let asrDrops = captionsEnabled ? italian.droppedPackets : 0
-            log("MIC packets=\(decoder.packets) size=\(data.count) seq=\(decoder.sequence.map(String.init) ?? "-") missing=\(decoder.missing) duplicates=\(decoder.duplicates) malformed=\(decoder.malformed) frames=\(decoder.decodedFrames) samples=\(decoder.sampleCount) errors=\(decoder.decodeErrors) asrIn=\(italian.pcmBuffersIn) asrProcessed=\(italian.processedChunks) partials=\(italian.partialCount) asrDrops=\(asrDrops) rms=\(decoder.rms)")
+        guard models.selectedModelInstalled else {
+            captionText = "Download an offline Whisper model first."
+            log("CAPTIONS: blocked — selected model is not installed")
+            return
         }
+
+        decoder = G2LC3Decoder()
+        guard decoder != nil else {
+            captionText = "LC3 decoder could not start."
+            log("CAPTIONS: LC3 decoder init failed")
+            return
+        }
+
+        let ready = await models.startSession()
+        guard ready else {
+            captionText = models.lastError ?? "Whisper model failed to load."
+            log("CAPTIONS: Whisper model not ready")
+            return
+        }
+
+        captionsEnabled = true
+        menuVisible = false
+        captionText = "Listening…"
+        direct.setMicEnabled(true)
+        direct.showCaption("Listening • \(models.selectedLanguageName)")
+        log("CAPTIONS: START \(models.selectedModel.title) / \(models.selectedLanguageName)")
+    }
+
+    func stopCaptions() {
+        guard captionsEnabled || micActive else { return }
+        captionsEnabled = false
+        micActive = false
+        pcmActive = false
+        direct.setMicEnabled(false)
+        models.stopSession()
+        decoder = nil
+        hudTask?.cancel()
+        hudTask = nil
+        pendingHUDText = nil
+        log("CAPTIONS: STOP")
     }
 
     func openMenu() {
         guard linkReady else {
-            menuVisible = false
-            log("DIRECT MENU BLOCKED: no verified RIGHT-lens 5402 response")
+            log("MENU: blocked — G2 link not verified")
             return
         }
         menuVisible = true
-        menuSelection = 0
-        renderMenu()
-        log("DIRECT G2 menu queued")
+        direct.openNativeMenu(title: "G2 ACCESS", items: menuItems)
+        log("MENU: requested native firmware list")
     }
 
     func closeMenu() {
         menuVisible = false
-        clearHUD()
-        log("G2 LAB menu CLOSED")
+        direct.closeNativeMenu()
     }
 
-    private func setMic(_ enabled: Bool) {
-        if !enabled { stopAudioSession(); return }
-        guard linkReady, direct?.micAvailable == true, prepareAudioSession() else { return }
-        direct?.setMicEnabled(true)
+    func hudTest() {
+        guard linkReady else { return }
+        menuVisible = false
+        direct.showCaption("G2 ACCESS\nHUD OK ✓\nNative BLE link verified")
+        log("HUD TEST: queued")
     }
 
-    private func handleGesture(_ name: String, source: Any?) {
-        log("GESTURE: \(name) source=\(String(describing: source))")
+    func clearHUD() {
+        direct.clearDisplay()
+        menuVisible = false
+    }
 
-        switch name {
-        case "double_tap":
-            if menuVisible {
-                activateMenuItem()
-            } else {
-                openMenu()
-            }
+    private var menuItems: [String] {
+        [
+            captionsEnabled ? "Stop Live Captions" : "Start Live Captions",
+            "Model: \(shortModelName)",
+            "HUD Test",
+            "Close"
+        ]
+    }
 
-        case "single_tap":
-            if menuVisible {
-                activateMenuItem()
-            } else if captionsEnabled && !lastRenderedCaption.isEmpty {
-                sendCaptionHUD(lastRenderedCaption)
-                restartCaptionHoldTimer()
-            }
-
-        case "swipe_up":
-            guard menuVisible else { return }
-            menuSelection = (menuSelection - 1 + menuItems.count) % menuItems.count
-            renderMenu()
-
-        case "swipe_down":
-            guard menuVisible else { return }
-            menuSelection = (menuSelection + 1) % menuItems.count
-            renderMenu()
-
-        default:
-            break
+    private var shortModelName: String {
+        switch models.selectedModelID {
+        case "openai_whisper-tiny": return "Tiny"
+        case "openai_whisper-base": return "Base"
+        case "openai_whisper-small": return "Small"
+        default: return "Large v3"
         }
     }
 
-    private func activateMenuItem() {
-        switch menuSelection {
-        case 0:
-            toggleCaptions()
-            renderMenu()
-        case 1:
-            toggleMic()
-            renderMenu()
-        case 2:
-            menuVisible = false
-            clearHUD()
-        case 3:
-            menuVisible = false
-            showConnectionStatus()
-        case 4:
-            closeMenu()
-        default:
-            break
+    private func wireWhisper() {
+        models.onLog = { [weak self] line in
+            self?.log(line)
+        }
+        models.onTranscript = { [weak self] text in
+            guard let self, self.captionsEnabled else { return }
+            self.captionText = text
+            self.queueHUD(text)
         }
     }
 
-    private func renderMenu() {
-        let rows = menuItems.enumerated().map { index, item in
-            "\(index == menuSelection ? ">" : " ") \(item)"
-        }.joined(separator: "\n")
-
-        let footer = captionsEnabled ? "\n\nCAPTIONS: ON" : "\n\nCAPTIONS: OFF"
-
-        guard let direct, direct.isProtocolReady else {
-            log("DIRECT MENU RENDER BLOCKED: protocol not ready")
-            return
+    private func wireTransport() {
+        direct.onLog = { [weak self] line in
+            self?.log(line)
         }
-        direct.showText("G2 LAB\n\n\(rows)\(footer)")
-    }
-
-    private func showConnectionStatus() {
-        let text = "G2 LAB STATUS\n\n\(status)\nMIC: \(micActive ? "ACTIVE" : (micEnabled ? "WAITING" : "OFF"))\nCAPTIONS: \(captionsEnabled ? "ON" : "OFF")"
-        guard let direct, direct.isProtocolReady else {
-            log("DIRECT STATUS HUD BLOCKED: protocol not ready")
-            return
-        }
-        direct.showText(text)
-    }
-
-    private func commitFinalCaption(_ text: String) {
-        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return }
-
-        if committedCaptionText.isEmpty {
-            committedCaptionText = cleaned
-        } else {
-            committedCaptionText += " " + cleaned
-        }
-
-        if committedCaptionText.count > 700 {
-            committedCaptionText = String(committedCaptionText.suffix(700))
-        }
-    }
-
-    private func combinedCaptionText() -> String {
-        let partial = currentPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if committedCaptionText.isEmpty {
-            return partial
-        }
-        if partial.isEmpty {
-            return committedCaptionText
-        }
-        return committedCaptionText + " " + partial
-    }
-
-    private func pushCaptionToHUD(_ text: String, force: Bool) {
-        guard captionsEnabled, !menuVisible, !text.isEmpty else { return }
-
-        let now = Date()
-        if !force && now.timeIntervalSince(lastHudPush) < 0.12 {
-            pendingHUDTask?.cancel()
-            let delay = 0.12 - now.timeIntervalSince(lastHudPush)
-            pendingHUDTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                guard !Task.isCancelled else { return }
-                self?.pushCaptionToHUD(text, force: true)
-            }
-            return
-        }
-        pendingHUDTask?.cancel()
-        pendingHUDTask = nil
-        lastHudPush = now
-
-        var visible = String(text.suffix(220))
-        // Leave room for protobuf/page wrapping inside the existing 253-byte payload.
-        while visible.utf8.count > 190 { visible.removeFirst() }
-        lastRenderedCaption = visible
-        sendCaptionHUD(visible)
-        restartCaptionHoldTimer()
-    }
-
-    private func sendCaptionHUD(_ visible: String) {
-        guard captionsEnabled, !menuVisible, !visible.isEmpty else { return }
-
-        guard let direct, direct.isProtocolReady else {
-            log("DIRECT CAPTION HUD BLOCKED: protocol not ready")
-            return
-        }
-        direct.showCaption(visible)
-    }
-
-    private func restartCaptionHoldTimer() {
-        captionHoldTask?.cancel()
-
-        let snapshot = lastRenderedCaption
-        guard !snapshot.isEmpty else { return }
-
-        captionHoldTask = Task { [weak self] in
+        direct.onReadyChanged = { [weak self] left, right in
             guard let self else { return }
-
-            // Keep the last phrase alive on-glass while the speaker pauses.
-            for _ in 0..<4 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled else { return }
-                guard self.captionsEnabled, !self.menuVisible else { return }
-                self.sendCaptionHUD(snapshot)
+            self.leftReady = left
+            self.rightReady = right
+            if !left || !right, self.linkReady {
+                self.linkReady = false
+                self.status = "RECOVERING"
             }
-
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            guard self.captionsEnabled, !self.menuVisible else { return }
-
-            if !self.currentPartialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.commitFinalCaption(self.currentPartialText)
-                self.currentPartialText = ""
-                self.captionText = self.combinedCaptionText()
-                self.italian.resetSession()
-            }
-
-            self.clearHUD()
-            self.log("Caption HUD idle clear after 5s — transcript retained")
         }
-    }
-
-    private func scheduleReconnect() {
-        guard hasConnectedOnce, reconnectTask == nil else { return }
-
-        reconnectTask = Task { [weak self] in
+        direct.onLinkStateChanged = { [weak self] state in
             guard let self else { return }
-
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-
-            do {
-                self.log("Background reconnect attempt…")
-                try self.sdk.connectDefault()
-                self.reconnectTask = nil
-            } catch {
-                self.log("Reconnect failed: \(error.localizedDescription)")
-                self.reconnectTask = nil
-
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                guard !Task.isCancelled else { return }
-                self.scheduleReconnect()
-            }
+            self.status = state
+            if state != "VERIFIED" { self.linkReady = false }
+        }
+        direct.onProtocolReady = { [weak self] in
+            guard let self else { return }
+            self.linkReady = true
+            self.status = "VERIFIED"
+            self.log("G2: protocol VERIFIED")
+        }
+        direct.onMicSessionInterrupted = { [weak self] in
+            guard let self else { return }
+            self.micActive = false
+            self.pcmActive = false
+            self.decoder = G2LC3Decoder()
+            self.log("MIC: session interrupted; LC3 state reset")
+        }
+        direct.onMicControlState = { [weak self] state in
+            self?.log("MIC CTRL: \(state)")
+        }
+        direct.onAudioDiagnostics = { [weak self] total, valid, invalid in
+            self?.micPackets = total
+            self?.validAudioPackets = valid
+            self?.invalidAudioPackets = invalid
+        }
+        direct.onMicPacket = { [weak self] packet in
+            self?.consumeMicPacket(packet)
+        }
+        direct.onInputEvent = { [weak self] event in
+            self?.handleInput(event)
         }
     }
 
-    private func log(_ s: String) {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        logs.insert("\(f.string(from: Date()))  \(s)", at: 0)
-        if logs.count > 150 {
-            logs.removeLast(logs.count - 150)
-        }
+    private func consumeMicPacket(_ packet: Data) {
+        guard captionsEnabled, let decoder else { return }
+        guard let pcm = decoder.decode(packet) else { return }
+        micActive = true
+        pcmActive = true
+        micLevel = decoder.rms
+        models.appendPCM16(pcm)
     }
 
-    func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didDiscover device: Device) {
-        if !devices.contains(where: { $0.id == device.id }) {
-            devices.append(device)
-        }
-        log("FOUND: \(device.name)")
-    }
-
-    func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didUpdateGlasses glasses: GlassesRuntimeState) {
-        status = glasses.connected ? "CONNECTED" : "DISCONNECTED"
-        batteryLevel = glasses.battery?.level
-        batteryCharging = glasses.battery?.charging ?? false
-        signalDbm = glasses.signal?.strengthDbm
-        log("GLASSES: \(status) battery=\(batteryLevel.map(String.init) ?? "unknown")")
-
-        if glasses.connected {
-            hasConnectedOnce = true
-            reconnectTask?.cancel()
-            reconnectTask = nil
-        } else {
-            scheduleReconnect()
-        }
-    }
-
-    func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didReceive event: BluetoothEvent) {
+    private func handleInput(_ event: DirectG2Transport.InputEvent) {
         switch event {
-        case let .touch(touch):
-            handleGesture(touch.gestureName ?? "unknown", source: touch.values["source"])
+        case let .listSelect(name, index):
+            lastInput = "SELECT \(index) @\(name)"
+            log("INPUT: native list select index=\(index) name=\(name)")
+            guard name == "menu-list" else { return }
+            runMenuAction(index)
 
-        default:
-            break
+        case let .scroll(name, direction):
+            let word = direction == 1 ? "UP" : direction == 2 ? "DOWN" : "\(direction)"
+            lastInput = "SCROLL \(word) @\(name)"
+            log("INPUT: native scroll \(word) @\(name)")
+
+        case let .gesture(code):
+            let word: String
+            switch code {
+            case 0: word = "TAP"
+            case 1: word = "SCROLL UP"
+            case 2: word = "SCROLL DOWN"
+            case 3: word = "DOUBLE TAP"
+            case 4: word = "FOREGROUND ENTER"
+            case 5: word = "FOREGROUND EXIT"
+            case 7: word = "SYSTEM EXIT"
+            default: word = "GESTURE \(code)"
+            }
+            lastInput = word
+            log("INPUT: \(word)")
+            if code == 3, !menuVisible { openMenu() }
+            if code == 7 { menuVisible = false }
         }
     }
 
-    func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didReceiveMicPcm event: MicPcmEvent) {
-        // Captions accept only decoded LEFT audio from the direct transport.
+    private func runMenuAction(_ index: Int) {
+        switch index {
+        case 0:
+            menuVisible = false
+            Task { await toggleCaptions() }
+
+        case 1:
+            cycleInstalledModel()
+            direct.openNativeMenu(title: "MODEL • \(shortModelName)", items: menuItems)
+
+        case 2:
+            hudTest()
+
+        case 3:
+            closeMenu()
+
+        default:
+            log("MENU: unknown row \(index)")
+        }
     }
 
-    func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didLog message: String) {
-        // SDK log payloads are not part of the metadata-only diagnostics contract.
+    private func cycleInstalledModel() {
+        let installed = models.models.filter { models.isInstalled($0.id) }
+        guard !installed.isEmpty else {
+            log("MENU: no offline model installed")
+            return
+        }
+        let current = installed.firstIndex(where: { $0.id == models.selectedModelID }) ?? -1
+        let next = installed[(current + 1) % installed.count]
+        models.selectModel(next.id)
+        log("MENU: model -> \(next.title)")
+    }
+
+    private func queueHUD(_ text: String) {
+        pendingHUDText = text
+        guard hudTask == nil else { return }
+        hudTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let value = self.pendingHUDText
+            self.pendingHUDText = nil
+            self.hudTask = nil
+            if let value, self.captionsEnabled {
+                self.direct.showCaption(value)
+            }
+        }
+    }
+
+    private func log(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        logs.insert("\(formatter.string(from: Date()))  \(message)", at: 0)
+        if logs.count > 160 { logs.removeLast(logs.count - 160) }
     }
 }
-

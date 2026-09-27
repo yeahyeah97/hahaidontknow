@@ -21,21 +21,6 @@ jobs:
           xcodebuild -version
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Download bundled Italian streaming ASR model
-        run: |
-          set -euo pipefail
-          MODEL_DIR="G2LAB/Resources/Models/KrokoIT"
-          BASE="https://huggingface.co/hudaiapa88/sherpa-stt-onnx/resolve/24105aa0d6b3b80a82338b12445ed34886871093/it/kroko_64l"
-          mkdir -p "$MODEL_DIR"
-          curl -L --fail --retry 3 "$BASE/encoder.int8.onnx?download=true" -o "$MODEL_DIR/it_encoder.onnx"
-          curl -L --fail --retry 3 "$BASE/decoder.int8.onnx?download=true" -o "$MODEL_DIR/it_decoder.onnx"
-          curl -L --fail --retry 3 "$BASE/joiner.int8.onnx?download=true" -o "$MODEL_DIR/it_joiner.onnx"
-          curl -L --fail --retry 3 "$BASE/tokens.txt?download=true" -o "$MODEL_DIR/it_tokens.txt"
-          test "$(wc -c < "$MODEL_DIR/it_encoder.onnx")" -gt 1000000
-          test "$(wc -c < "$MODEL_DIR/it_decoder.onnx")" -gt 100000
-          test "$(wc -c < "$MODEL_DIR/it_joiner.onnx")" -gt 100000
-          test "$(wc -c < "$MODEL_DIR/it_tokens.txt")" -gt 1000
-          ls -lh "$MODEL_DIR"
       - name: Fetch pinned native liblc3 and preserve license
         run: |
           set -euo pipefail
@@ -67,21 +52,21 @@ jobs:
         run: |
           APP="build/DerivedData/Build/Products/Release-iphoneos/G2LAB.app"
           test -d "$APP"
-          rm -rf Payload G2_LAB_v0.4.3-b10-unsigned.ipa
+          rm -rf Payload G2_ACCESS_v0.5.0-b1-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry G2_LAB_v0.4.3-b10-unsigned.ipa Payload
+          /usr/bin/zip -qry G2_ACCESS_v0.5.0-b1-unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: G2_LAB_v0.4.3-b10_unsigned_IPA
-          path: G2_LAB_v0.4.3-b10-unsigned.ipa
+          name: G2_ACCESS_v0.5.0-b1_unsigned_IPA
+          path: G2_ACCESS_v0.5.0-b1-unsigned.ipa
           retention-days: 7
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: G2_LAB_build_log
+          name: G2_ACCESS_build_log
           path: build.log
           if-no-files-found: ignore
           retention-days: 7

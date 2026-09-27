@@ -2,56 +2,56 @@ name: G2LAB
 options:
   bundleIdPrefix: com.g2lab
   deploymentTarget:
-    iOS: '16.0'
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
 packages:
-  MentraBluetoothSDK:
-    url: https://github.com/Mentra-Community/mentra-bluetooth-sdk-ios.git
-    exactVersion: 3.2.1-beta.429
-  SherpaOnnx:
-    url: https://github.com/k2-fsa/sherpa-onnx.git
-    exactVersion: 1.13.8
+  WhisperKit:
+    url: https://github.com/argmaxinc/argmax-oss-swift.git
+    exactVersion: 1.1.0
 targets:
   G2LAB:
     type: application
     platform: iOS
     sources:
-      - G2LAB
+      - path: G2LAB
       - path: ThirdParty/liblc3/src
-        includes: ["*.c", "*.h"]
+        includes:
+          - "*.c"
     resources:
-      - G2LAB/Resources
+      - path: G2LAB/Resources
+    dependencies:
+      - package: WhisperKit
+        product: WhisperKit
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.app
-        MARKETING_VERSION: 0.4.3
-        CURRENT_PROJECT_VERSION: 10
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SWIFT_VERSION: 5.9
-        SWIFT_OBJC_BRIDGING_HEADER: G2LAB/G2LAB-Bridging-Header.h
+        PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.access
+        PRODUCT_NAME: G2 LAB
+        MARKETING_VERSION: 0.5.0
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - "$(inherited)"
+          - G2_LC3_NATIVE=1
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/ThirdParty/liblc3/include"
+          - "$(SRCROOT)/ThirdParty/liblc3/src"
         OTHER_CFLAGS:
           - "$(inherited)"
           - "-include"
           - "$(SRCROOT)/ThirdParty/liblc3/g2_namespace.h"
-        HEADER_SEARCH_PATHS:
-          - "$(SRCROOT)/ThirdParty/liblc3/include"
-          - "$(SRCROOT)/ThirdParty/liblc3/src"
-        TARGETED_DEVICE_FAMILY: '1'
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_IDENTITY: ''
-        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: G2LAB/G2LAB-Bridging-Header.h
+        GENERATE_INFOPLIST_FILE: "YES"
         INFOPLIST_KEY_CFBundleDisplayName: G2 LAB
-        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: G2 LAB connects to Even Realities G2 over Bluetooth.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: G2 LAB uses microphone audio for captions and accessibility features when enabled.
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: G2 LAB uses on-device speech recognition for offline captions.
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: G2 LAB connects directly to your Even Realities G2 glasses for display, controls, and microphone audio.
         INFOPLIST_KEY_UIBackgroundModes:
           - bluetooth-central
-          - fetch
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
-    dependencies:
-      - package: MentraBluetoothSDK
-        product: MentraBluetoothSDK
-      - package: SherpaOnnx
-        product: sherpa-onnx
-
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"

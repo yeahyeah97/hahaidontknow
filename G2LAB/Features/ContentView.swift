@@ -2,58 +2,65 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var g2: G2Controller
-    @StateObject private var permissions = PermissionCenter()
+    @EnvironmentObject var models: WhisperModelManager
+
+    @State private var tab = 0
     @State private var showDiagnostics = false
 
-    private let accent = Color(red: 0.55, green: 0.28, blue: 0.98)
+    private let accent = Color(red: 0.62, green: 0.35, blue: 1.0)
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color.black, Color(red: 0.055, green: 0.05, blue: 0.085)],
+                colors: [.black, Color(red: 0.055, green: 0.035, blue: 0.09)],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: 16) {
                     header
-                    deviceCard
-                    captionCard
-                    quickActions
-                    permissionsCard
-                    performanceCard
+                    connectionCard
+                    tabPicker
+
+                    if tab == 0 {
+                        captionsCard
+                    } else if tab == 1 {
+                        modelsCard
+                    } else {
+                        glassesCard
+                    }
+
                     diagnostics
                 }
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 16)
                 .padding(.top, 12)
-                .padding(.bottom, 34)
+                .padding(.bottom, 36)
             }
         }
         .preferredColorScheme(.dark)
         .onAppear {
-            permissions.requestStartupPermissions()
-            g2.startLink()
+            models.refreshInstalled()
         }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(accent.opacity(0.16))
-                    .frame(width: 52, height: 52)
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(accent.opacity(0.18))
+                    .frame(width: 54, height: 54)
                 Image(systemName: "eyeglasses")
-                    .font(.system(size: 25, weight: .semibold))
+                    .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(accent)
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("G2 LAB")
-                    .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.4.3 b10")
-                    .font(.caption2.weight(.semibold))
+                Text("G2 ACCESS")
+                    .font(.system(size: 27, weight: .black, design: .rounded))
+                Text("NATIVE G2 + OFFLINE WHISPER  •  v0.5.0")
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }
 
@@ -61,241 +68,302 @@ struct ContentView: View {
 
             Circle()
                 .fill(g2.linkReady ? Color.green : Color.orange)
-                .frame(width: 9, height: 9)
+                .frame(width: 10, height: 10)
         }
     }
 
-    private var deviceCard: some View {
-        VStack(spacing: 18) {
+    private var connectionCard: some View {
+        VStack(spacing: 14) {
             HStack {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("EVEN REALITIES G2")
                         .font(.headline)
                     Text(g2.status)
-                        .font(.caption.monospaced().weight(.semibold))
+                        .font(.caption.monospaced().weight(.bold))
                         .foregroundStyle(g2.linkReady ? .green : .secondary)
                 }
-
                 Spacer()
-
-                if let battery = g2.batteryLevel {
-                    HStack(spacing: 6) {
-                        Image(systemName: g2.batteryCharging ? "bolt.fill" : batterySymbol(battery))
-                            .foregroundStyle(battery < 20 ? .red : .green)
-                        Text("\(battery)%")
-                            .font(.subheadline.monospaced().weight(.bold))
-                    }
+                HStack(spacing: 7) {
+                    lensDot("L", ready: g2.leftReady)
+                    lensDot("R", ready: g2.rightReady)
                 }
             }
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [accent.opacity(0.18), Color.white.opacity(0.035)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(height: 155)
-
-                Image(systemName: "eyeglasses")
-                    .font(.system(size: 88, weight: .ultraLight))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.white.opacity(0.92), accent.opacity(0.9)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-            }
-
-            if g2.linkReady {
-                HStack(spacing: 10) {
-                    statusPill(icon: "wave.3.right", title: "BLE", value: signalText)
-                    statusPill(icon: "mic.fill", title: "MIC", value: g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))
-                    statusPill(icon: "captions.bubble.fill", title: "ASR", value: g2.asrLive ? "LIVE" : (g2.captionsEnabled ? "WAITING" : "OFF"))
-                }
-            } else {
-                VStack(spacing: 10) {
-                    Button {
-                        g2.scan()
-                    } label: {
-                        Label("Scan for G2", systemImage: "dot.radiowaves.left.and.right")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accent)
-
-                    ForEach(Array(g2.devices.enumerated()), id: \.offset) { _, d in
-                        Button {
-                            g2.connect(d)
-                        } label: {
-                            HStack {
-                                Image(systemName: "eyeglasses")
-                                Text(d.name)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-            }
-        }
-        .padding(18)
-        .background(cardBackground)
-    }
-
-    private var captionCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("LIVE CAPTIONS", systemImage: "captions.bubble.fill")
-                    .font(.headline)
-                Spacer()
-                Text(g2.captionStatus)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Text("MIC \(g2.micActive ? "ACTIVE" : "—") • PCM \(g2.pcmActive ? "ACTIVE" : "—") • ASR \(g2.asrLive ? "LIVE" : "—")")
-                .font(.caption2.monospaced())
-
-            Text(g2.captionText.isEmpty ? "Parla in italiano… le caption appariranno qui e sul G2." : g2.captionText)
-                .font(.system(size: 18, weight: .medium, design: .rounded))
-                .foregroundStyle(g2.captionText.isEmpty ? .secondary : .primary)
-                .frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
 
             HStack(spacing: 10) {
                 Button {
-                    g2.toggleCaptions()
+                    g2.connect()
                 } label: {
-                    Label(
-                        g2.captionsEnabled ? "Stop captions" : "Start captions",
-                        systemImage: g2.captionsEnabled ? "stop.fill" : "play.fill"
-                    )
-                    .frame(maxWidth: .infinity)
+                    Label(g2.linkReady ? "Reconnect" : "Connect G2", systemImage: "antenna.radiowaves.left.and.right")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(g2.captionsEnabled ? .red : accent)
+                .tint(accent)
 
                 Button {
-                    g2.clearHUD()
+                    g2.disconnect()
                 } label: {
-                    Image(systemName: "rectangle.slash")
+                    Image(systemName: "xmark")
                         .frame(width: 34)
                 }
                 .buttonStyle(.bordered)
             }
-
-            Text("Direct G2 mic is hardware-proven: LEFT 6402 → LC3 → PCM. This build focuses on streaming Italian ASR; direct gesture decoding is still being mapped.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(18)
-        .background(cardBackground)
+        .background(card)
     }
 
-    private var quickActions: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("QUICK CONTROLS")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 10) {
-                quickButton("Mic", g2.micEnabled ? "mic.fill" : "mic.slash.fill") {
-                    g2.toggleMic()
-                }
-                quickButton("G2 Menu", "square.grid.2x2") {
-                    g2.openMenu()
-                }
-                quickButton("HUD Test", "text.viewfinder") {
-                    g2.showProof()
-                }
-            }
-
-            Text("This build only reports MENU OPEN after a verified direct G2 link and a real HUD write is queued. Direct gesture decoding is next.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    private var tabPicker: some View {
+        Picker("Section", selection: $tab) {
+            Text("CAPTIONS").tag(0)
+            Text("MODELS").tag(1)
+            Text("GLASSES").tag(2)
         }
-        .padding(18)
-        .background(cardBackground)
+        .pickerStyle(.segmented)
     }
 
-    private var permissionsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var captionsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label("APP ACCESS", systemImage: "checkmark.shield.fill")
+                Label("LIVE CAPTIONS", systemImage: "captions.bubble.fill")
                     .font(.headline)
                 Spacer()
-                Button("Request again") {
-                    permissions.requestStartupPermissions()
-                }
-                .font(.caption)
+                Text(models.ready ? "OFFLINE READY" : models.modelState)
+                    .font(.caption2.monospaced().weight(.bold))
+                    .foregroundStyle(models.ready ? .green : .secondary)
             }
 
-            permissionRow("Bluetooth", value: "Requested when scanning", icon: "wave.3.right")
-            permissionRow("Microphone", value: permissions.microphone, icon: "mic.fill")
-            permissionRow("Speech fallback", value: permissions.speech, icon: "waveform")
-            permissionRow("Notifications", value: permissions.notifications, icon: "bell.fill")
-            permissionRow("Background BLE", value: "DECLARED", icon: "arrow.triangle.2.circlepath")
+            HStack(spacing: 10) {
+                metric("MODEL", shortModel)
+                metric("LANG", models.selectedLanguageName)
+                metric("LEVEL", String(format: "%.3f", g2.micLevel))
+            }
 
-            Text("CoreBluetooth background-central is declared. iOS controls Background App Refresh separately; this build no longer claims the toggle is enabled when Settings does not expose it.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(18)
-        .background(cardBackground)
-    }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("TRANSCRIPT")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Text(g2.captionText.isEmpty ? "Download a model, connect G2, then start captions." : g2.captionText)
+                    .font(.system(size: 19, weight: .medium, design: .rounded))
+                    .foregroundStyle(g2.captionText.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+                    .textSelection(.enabled)
+            }
+            .padding(14)
+            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
 
-    private var performanceCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("LINK & PERFORMANCE", systemImage: "gauge.with.dots.needle.67percent")
-                .font(.headline)
+            Picker("Language", selection: Binding(
+                get: { models.selectedLanguageCode },
+                set: { models.selectLanguage($0) }
+            )) {
+                ForEach(models.languages) { language in
+                    Text(language.title).tag(language.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Button {
+                Task { await g2.toggleCaptions() }
+            } label: {
+                Label(
+                    g2.captionsEnabled ? "Stop Live Captions" : "Start Live Captions",
+                    systemImage: g2.captionsEnabled ? "stop.fill" : "waveform.and.mic"
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(g2.captionsEnabled ? .red : accent)
+            .disabled(!g2.linkReady || (!models.selectedModelInstalled && !g2.captionsEnabled))
+
+            if !models.selectedModelInstalled {
+                Button {
+                    tab = 1
+                } label: {
+                    Label("Download an offline model", systemImage: "arrow.down.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
 
             HStack {
-                metric("LINK", g2.linkDebugState)
-                metric("LEVEL", String(format: "%.3f", g2.micLevel))
-                metric("HUD", g2.linkReady ? "READY" : "OFF")
+                Text("PCM \(g2.pcmActive ? "LIVE" : "—")")
+                Spacer()
+                Text(String(format: "%.0f ms inference", models.inferenceMs))
+                Spacer()
+                Text(String(format: "%.1fs buffer", models.bufferedSeconds))
             }
-
-            Text("Battery/latency mode: coalesced HUD writes, one PCM stream, ASR only while captions are enabled, reconnect backoff enabled.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
         }
         .padding(18)
-        .background(cardBackground)
+        .background(card)
+    }
+
+    private var modelsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("OFFLINE MODEL LIBRARY", systemImage: "square.stack.3d.up.fill")
+                .font(.headline)
+
+            Text("Models download once to this iPhone. After installation, speech recognition runs locally without an internet connection. Language is selected separately because these Whisper packages are multilingual.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(models.models) { model in
+                modelRow(model)
+            }
+
+            if let error = models.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(18)
+        .background(card)
+    }
+
+    private func modelRow(_ model: WhisperModelManager.ModelOption) -> some View {
+        let installed = models.isInstalled(model.id)
+        let selected = models.selectedModelID == model.id
+        let downloading = models.activeDownloadID == model.id
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text(model.title)
+                            .font(.subheadline.weight(.bold))
+                        if selected {
+                            Text("SELECTED")
+                                .font(.system(size: 8, weight: .black))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(accent.opacity(0.25), in: Capsule())
+                        }
+                    }
+                    Text("\(model.subtitle) • ~\(model.approxMB) MB")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if installed {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+
+            if downloading {
+                ProgressView(value: models.downloadProgress)
+                Text("\(Int(models.downloadProgress * 100))%")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                if installed {
+                    Button(selected ? "Selected" : "Use") {
+                        models.selectModel(model.id)
+                        Task { await models.loadSelectedModel() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(selected ? .green : accent)
+                    .disabled(selected && models.ready)
+
+                    Button(role: .destructive) {
+                        models.delete(model)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(models.activeDownloadID != nil || g2.captionsEnabled)
+                } else {
+                    Button {
+                        models.selectModel(model.id)
+                        models.download(model)
+                    } label: {
+                        Label("Download", systemImage: "arrow.down.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+                    .disabled(models.activeDownloadID != nil)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var glassesCard: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Label("G2 NATIVE MENU", systemImage: "list.bullet.rectangle.fill")
+                .font(.headline)
+
+            Text("This build uses the G2 firmware's native list container with event capture. Scroll changes the highlighted row on the glasses; tap returns the selected row to the iPhone.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button {
+                g2.openMenu()
+            } label: {
+                Label("Open G2 Menu", systemImage: "square.grid.2x2.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(accent)
+            .disabled(!g2.linkReady)
+
+            HStack(spacing: 10) {
+                Button {
+                    g2.hudTest()
+                } label: {
+                    Label("HUD Test", systemImage: "text.viewfinder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    g2.clearHUD()
+                } label: {
+                    Label("Clear", systemImage: "rectangle.slash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            HStack {
+                Text("LAST INPUT")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(g2.lastInput)
+                    .font(.caption.monospaced().weight(.bold))
+                    .foregroundStyle(accent)
+            }
+        }
+        .padding(18)
+        .background(card)
     }
 
     private var diagnostics: some View {
         DisclosureGroup(isExpanded: $showDiagnostics) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Group {
-                    Text("LINK: \(g2.linkDebugState)")
-                    Text("6402 RX: \(g2.audioNotificationCount)")
-                    Text("205B: \(g2.audio205Count)")
-                    Text("BAD: \(g2.audioInvalidCount)")
-                    Text("MIC CTRL: \(g2.micControlState)")
-                    Text("MIC: \(g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
-                    Text("PCM: \(g2.pcmActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
-                    Text(String(format: "LEVEL: %.3f", g2.micLevel))
-                    Text("ASR MODEL: \(g2.italianModelState)")
-                    Text("APPLE OFFLINE: \(g2.italianAppleState)")
-                    Text("ASR PCM IN: \(g2.italianPCMIn)")
-                    Text("ASR QUEUED: \(g2.italianQueued)")
-                    Text("ASR PROCESSED: \(g2.italianProcessed)")
-                    Text("ASR DROPPED: \(g2.italianDropped)")
-                    Text("PARTIALS: \(g2.italianPartials) • FINALS: \(g2.italianFinals)")
-                    Text(String(format: "INFERENCE: %.0f ms", g2.italianInferenceMs))
-                    Text("EVENT PROBE: \(g2.gestureProbeCount)")
+                    Text("LINK: \(g2.status)")
+                    Text("AUDIO: \(g2.validAudioPackets)/\(g2.micPackets) valid • bad \(g2.invalidAudioPackets)")
+                    Text("PCM: \(g2.pcmActive ? "ACTIVE" : "OFF") • LEVEL \(String(format: "%.4f", g2.micLevel))")
+                    Text("WHISPER: \(models.modelState)")
+                    Text("MODEL: \(models.selectedModelID)")
+                    Text("LANG: \(models.selectedLanguageCode)")
+                    Text("BUFFER: \(String(format: "%.2fs", models.bufferedSeconds))")
+                    Text("INFERENCE: \(String(format: "%.0fms", models.inferenceMs))")
+                    Text("INPUT: \(g2.lastInput)")
                 }
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
 
                 Divider().padding(.vertical, 7)
 
-                ForEach(Array(g2.logs.prefix(50).enumerated()), id: \.offset) { _, line in
+                ForEach(Array(g2.logs.prefix(70).enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.system(size: 9, design: .monospaced))
                         .textSelection(.enabled)
@@ -308,71 +376,38 @@ struct ContentView: View {
                 .font(.subheadline.weight(.semibold))
         }
         .padding(18)
-        .background(cardBackground)
+        .background(card)
     }
 
-    private var cardBackground: some View {
+    private var shortModel: String {
+        switch models.selectedModelID {
+        case "openai_whisper-tiny": return "TINY"
+        case "openai_whisper-base": return "BASE"
+        case "openai_whisper-small": return "SMALL"
+        default: return "LARGE"
+        }
+    }
+
+    private var card: some View {
         RoundedRectangle(cornerRadius: 24, style: .continuous)
             .fill(Color.white.opacity(0.065))
             .overlay {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.075), lineWidth: 1)
             }
     }
 
-    private var signalText: String {
-        guard let dbm = g2.signalDbm else { return "—" }
-        return "\(dbm)"
-    }
-
-    private func batterySymbol(_ level: Int) -> String {
-        if level >= 90 { return "battery.100" }
-        if level >= 60 { return "battery.75" }
-        if level >= 35 { return "battery.50" }
-        if level >= 15 { return "battery.25" }
-        return "battery.0"
-    }
-
-    private func statusPill(icon: String, title: String, value: String) -> some View {
-        VStack(spacing: 5) {
-            Image(systemName: icon)
-                .foregroundStyle(accent)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.monospaced().weight(.bold))
+    private func lensDot(_ label: String, ready: Bool) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(ready ? Color.green : Color.gray)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption2.monospaced().weight(.bold))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func quickButton(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.title3)
-                Text(title)
-                    .font(.caption.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-        }
-        .buttonStyle(.bordered)
-    }
-
-    private func permissionRow(_ title: String, value: String, icon: String) -> some View {
-        HStack {
-            Image(systemName: icon)
-                .foregroundStyle(accent)
-                .frame(width: 24)
-            Text(title)
-            Spacer()
-            Text(value)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color.white.opacity(0.05), in: Capsule())
     }
 
     private func metric(_ title: String, _ value: String) -> some View {
@@ -381,9 +416,10 @@ struct ContentView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.headline.monospaced())
+                .font(.subheadline.monospaced().weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-
