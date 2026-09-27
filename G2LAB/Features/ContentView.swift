@@ -34,6 +34,7 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             permissions.requestStartupPermissions()
+            g2.startLink()
         }
     }
 
@@ -51,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.3.1 b5")
+                Text("ACCESSIBILITY ENGINE  •  v0.3.2 b6")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -186,7 +187,7 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
 
-            Text("Direct G2 mic: UUID 6402 raw LC3 • 16 kHz mono path • Kroko loads only when captions start")
+            Text("Direct G2 display: 5401/5402 • right lens primary. G2 microphone transport is still being reverse-engineered; 6402 is display, not mic.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -212,7 +213,7 @@ struct ContentView: View {
                 }
             }
 
-            Text("Glasses: double tap opens menu • swipe up/down moves • single/double tap activates • CLOSE MENU exits")
+            Text("This build only reports MENU OPEN after a verified direct G2 link and a real HUD write is queued. Direct gesture decoding is next.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -252,7 +253,7 @@ struct ContentView: View {
                 .font(.headline)
 
             HStack {
-                metric("LC3", "\(g2.micPacketCount)")
+                metric("LINK", g2.linkReady ? "VERIFIED" : "OFF")
                 metric("LEVEL", String(format: "%.3f", g2.micLevel))
                 metric("HUD", g2.linkReady ? "READY" : "OFF")
             }
