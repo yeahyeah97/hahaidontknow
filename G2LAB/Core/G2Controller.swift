@@ -21,6 +21,9 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     private let sdk = MentraBluetoothSDK(configuration: .default)
     private let italian = StreamingItalianRecognizer()
+    private let direct = DirectG2Transport()
+    private var directLeftReady = false
+    private var directRightReady = false
 
     private var reconnectTask: Task<Void, Never>?
     private var captionHoldTask: Task<Void, Never>?
@@ -41,6 +44,29 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     override init() {
         super.init()
         sdk.delegate = self
+
+        direct.onLog = { [weak self] message in
+            Task { @MainActor in self?.log(message) }
+        }
+        direct.onReadyChanged = { [weak self] left, right in
+            Task { @MainActor in
+                guard let self else { return }
+                self.directLeftReady = left
+                self.directRightReady = right
+                self.log("DIRECT: L=\(left ? "READY" : "—") R=\(right ? "READY" : "—")")
+                if left || right {
+                    self.status = left && right ? "DIRECT L+R READY" : "DIRECT PARTIAL"
+                }
+            }
+        }
+        direct.onPacket = { [weak self] side, data in
+            guard data.count >= 8 else { return }
+            let svc = String(format: "%02X%02X", data[6], data[7])
+            if svc == "E001" || svc == "E000" {
+                Task { @MainActor in self?.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B") }
+            }
+        }
+        direct.start()
 
         italian.onText = { [weak self] text, isFinal in
             guard let self else { return }
