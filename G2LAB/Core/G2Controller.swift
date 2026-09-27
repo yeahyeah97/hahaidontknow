@@ -21,7 +21,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     private let sdk = MentraBluetoothSDK(configuration: .default)
     private let italian = StreamingItalianRecognizer()
-    private let direct = DirectG2Transport()
+    private var direct: DirectG2Transport?
     private var directLeftReady = false
     private var directRightReady = false
 
@@ -45,33 +45,6 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         super.init()
         sdk.delegate = self
 
-        direct.onLog = { [weak self] message in
-            Task { @MainActor in self?.log(message) }
-        }
-        direct.onReadyChanged = { [weak self] left, right in
-            Task { @MainActor in
-                guard let self else { return }
-                self.directLeftReady = left
-                self.directRightReady = right
-                self.log("DIRECT: L=\(left ? "READY" : "—") R=\(right ? "READY" : "—")")
-                if left || right {
-                    self.status = left && right ? "DIRECT L+R READY" : "DIRECT PARTIAL"
-                }
-            }
-        }
-        direct.onPacket = { [weak self] side, data in
-            guard data.count >= 8 else { return }
-            let svc = String(format: "%02X%02X", data[6], data[7])
-            if svc == "E001" || svc == "E000" {
-                Task { @MainActor in self?.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B") }
-            }
-        }
-        // Do not start the restoration-enabled CoreBluetooth central during
-        // @MainActor object construction. Let iOS finish launching first.
-        DispatchQueue.main.async { [weak self] in
-            self?.direct.start()
-        }
-
         italian.onText = { [weak self] text, isFinal in
             guard let self else { return }
 
@@ -88,9 +61,47 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             self.pushCaptionToHUD(combined, force: isFinal)
         }
 
-        log("G2 LAB v0.2 boot")
+        log("G2 LAB v0.3 boot — direct transport idle until Scan")
     }
 
+
+
+    private func startDirectTransportIfNeeded() {
+        guard direct == nil else {
+            direct?.start()
+            return
+        }
+
+        log("DIRECT: creating clean-room CoreBluetooth transport")
+        let transport = DirectG2Transport()
+
+        transport.onLog = { [weak self] message in
+            Task { @MainActor in self?.log(message) }
+        }
+
+        transport.onReadyChanged = { [weak self] left, right in
+            Task { @MainActor in
+                guard let self else { return }
+                self.directLeftReady = left
+                self.directRightReady = right
+                self.log("DIRECT: L=\(left ? "READY" : "—") R=\(right ? "READY" : "—")")
+                if left || right {
+                    self.status = left && right ? "DIRECT L+R READY" : "DIRECT PARTIAL"
+                }
+            }
+        }
+
+        transport.onPacket = { [weak self] side, data in
+            guard data.count >= 8 else { return }
+            let svc = String(format: "%02X%02X", data[6], data[7])
+            Task { @MainActor in
+                self?.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B")
+            }
+        }
+
+        direct = transport
+        transport.start()
+    }
 
     func backgroundRefreshPulse() {
         log("APP: BACKGROUND REFRESH")
@@ -129,6 +140,10 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func scan() {
+        // Direct BLE is deliberately created only after the user taps Scan.
+        // This keeps launch completely free of the experimental transport and
+        // makes any CoreBluetooth failure observable instead of a launch crash.
+        startDirectTransportIfNeeded()
         devices.removeAll()
         status = "SCANNING"
         log("Scanning for Even Realities G2…")
