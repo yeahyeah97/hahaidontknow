@@ -71,7 +71,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     func toggleMic() {
         micEnabled.toggle()
         sdk.setPreferredMic(.auto)
-        sdk.setMicState(enabled: micEnabled, useGlassesMic: true, bypassVad: false)
+        sdk.setMicState(enabled: micEnabled, useGlassesMic: true)
         log("G2 microphone \(micEnabled ? "ON" : "OFF")")
     }
 
@@ -124,9 +124,5 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didLog message: String) {
         log("SDK: \(message)")
-    }
-
-    func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didFail error: BluetoothError) {
-        log("SDK ERROR: \(error)")
     }
 }
