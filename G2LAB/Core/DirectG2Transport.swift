@@ -976,13 +976,18 @@ extension DirectG2Transport: CBPeripheralDelegate {
         if uuid == Self.audioUUID {
             guard lens.side == .left else { return }
             audioNotificationCount += 1
-            onLog?("6402 RX #\(audioNotificationCount) size=\(data.count)")
+            let shouldLogSample = audioNotificationCount == 1 || audioNotificationCount % 20 == 0
+            if shouldLogSample {
+                onLog?("6402 RX #\(audioNotificationCount) size=\(data.count)")
+            }
             if audioNotificationCount == 1 {
                 onLog?("6402 FIRST PACKET size=\(data.count)")
             }
             if data.count == 205 {
                 audio205Count += 1
-                onLog?("6402 VALID 205B seq=\(data[204])")
+                if shouldLogSample {
+                    onLog?("6402 VALID 205B seq=\(data[204])")
+                }
             } else {
                 audioInvalidCount += 1
                 onLog?("6402 INVALID SIZE=\(data.count)")
