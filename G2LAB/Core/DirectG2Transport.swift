@@ -114,7 +114,7 @@ final class DirectG2Transport: NSObject {
         pendingCaption = text
         if captionDisplayReady { flushCaption(); return }
         guard !captionInitializing else { return }
-        sendTeleprompter(text)
+        sendTeleprompter(text, captionLayout: true)
         captionInitializing = true
         let generation = hudGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in
@@ -147,7 +147,7 @@ final class DirectG2Transport: NSObject {
         sendTeleprompter(" ")
     }
 
-    private func sendTeleprompter(_ text: String) {
+    private func sendTeleprompter(_ text: String, captionLayout: Bool = false) {
         hudGeneration += 1
         let generation = hudGeneration
         captionDisplayReady = false
@@ -168,7 +168,7 @@ final class DirectG2Transport: NSObject {
         cfgPayload += displayConfig
 
         let lines = Self.wrap(text: text, width: 25, maxLines: 10)
-        let contentHeight = max(1, (max(lines.count, 1) * 2665) / 140)
+        let contentHeight = max(1, ((captionLayout ? 10 : max(lines.count, 1)) * 2665) / 140)
         var display: [UInt8] = [0x08,0x01,0x10,0x00,0x18,0x00,0x20,0x8B,0x02,0x28]
         display += Self.varint(UInt64(contentHeight))
         display += [0x30,0xE6,0x01,0x38,0x8E,0x0A,0x40,0x05,0x48,0x00]

@@ -393,7 +393,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     private func showConnectionStatus() {
-        let text = "G2 LAB STATUS\n\n\(status)\nMIC: \(micEnabled ? "ON" : "OFF")\nCAPTIONS: \(captionsEnabled ? "ON" : "OFF")"
+        let text = "G2 LAB STATUS\n\n\(status)\nMIC: \(micActive ? "ACTIVE" : (micEnabled ? "WAITING" : "OFF"))\nCAPTIONS: \(captionsEnabled ? "ON" : "OFF")"
         guard let direct, direct.isProtocolReady else {
             log("DIRECT STATUS HUD BLOCKED: protocol not ready")
             return
