@@ -1,0 +1,51 @@
+name: Build G2 LAB IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer || true
+          xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project G2LAB.xcodeproj -scheme G2LAB
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild -project G2LAB.xcodeproj -scheme G2LAB -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee build.log
+      - name: Package unsigned IPA
+        run: |
+          APP="build/DerivedData/Build/Products/Release-iphoneos/G2LAB.app"
+          test -d "$APP"
+          rm -rf Payload G2_LAB_v0.1-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          /usr/bin/zip -qry G2_LAB_v0.1-unsigned.ipa Payload
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: G2_LAB_v0.1_unsigned_IPA
+          path: G2_LAB_v0.1-unsigned.ipa
+          retention-days: 7
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: G2_LAB_build_log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
