@@ -130,7 +130,7 @@ final class G2Controller: ObservableObject {
     }
 
     func clearHUD() {
-        direct.clearDisplay()
+        direct.clearText()
         menuVisible = false
     }
 
