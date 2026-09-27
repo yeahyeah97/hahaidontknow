@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import Speech
 #if canImport(SherpaOnnx)
 import SherpaOnnx
 #elseif canImport(SherpaOnnxShared)
@@ -70,6 +72,7 @@ final class StreamingItalianRecognizer: ObservableObject {
     @Published private(set) var partialCount = 0
     @Published private(set) var finalCount = 0
     @Published private(set) var inputRMS: Double = 0
+    @Published private(set) var appleFallbackState = "IDLE"
 
     var onText: ((String, Bool) -> Void)?
 
@@ -90,10 +93,20 @@ final class StreamingItalianRecognizer: ObservableObject {
     private var loadingPrerollSamples = 0
     private let maxPrerollSamples = 16_000      // 1 second while model loads
 
+    // Independent on-device iOS recognizer. It consumes the exact same decoded
+    // 16-kHz PCM and gives us a second, hardware-independent path while Kroko
+    // readiness is diagnosed. Network recognition is explicitly forbidden.
+    private var appleRecognizer: SFSpeechRecognizer?
+    private var appleRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var appleTask: SFSpeechRecognitionTask?
+    private var appleFormat: AVAudioFormat?
+    private var appleLastText = ""
+
     init() {}
 
     func start() {
         isRunning = true
+        startAppleFallback()
         if modelReady {
             modelState = "READY"
             status = "KROKO IT • STREAMING"
@@ -110,6 +123,7 @@ final class StreamingItalianRecognizer: ObservableObject {
 
     func stop() {
         isRunning = false
+        stopAppleFallback()
         resetSession()
         status = modelReady ? "KROKO IT • READY" : "KROKO IT • MODEL ERROR"
     }
@@ -148,6 +162,7 @@ final class StreamingItalianRecognizer: ObservableObject {
         pcmBuffersIn += 1
         pcmSamplesIn += samples.count
         inputRMS = sqrt(energy / Double(samples.count))
+        appendToAppleFallback(data)
 
         guard modelReady else {
             loadingPreroll.append(samples)
@@ -225,6 +240,82 @@ final class StreamingItalianRecognizer: ObservableObject {
                 self.drainIfNeeded()
             }
         }
+    }
+
+
+    private func startAppleFallback() {
+        stopAppleFallback()
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            appleFallbackState = "NO PERMISSION"
+            return
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "it-IT")) else {
+            appleFallbackState = "UNAVAILABLE"
+            return
+        }
+        guard recognizer.supportsOnDeviceRecognition else {
+            appleFallbackState = "ON-DEVICE UNAVAILABLE"
+            return
+        }
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                         sampleRate: 16_000,
+                                         channels: 1,
+                                         interleaved: false) else {
+            appleFallbackState = "FORMAT ERROR"
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true
+        request.shouldReportPartialResults = true
+
+        appleRecognizer = recognizer
+        appleRequest = request
+        appleFormat = format
+        appleLastText = ""
+        appleFallbackState = "ON-DEVICE READY"
+
+        appleTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self, self.isRunning else { return }
+                if let result {
+                    let text = result.bestTranscription.formattedString
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.appleFallbackState = result.isFinal ? "FINAL" : "LISTENING"
+                    if !text.isEmpty, text != self.appleLastText {
+                        self.appleLastText = text
+                        if result.isFinal { self.finalCount += 1 } else { self.partialCount += 1 }
+                        self.onText?(text, result.isFinal)
+                    }
+                } else if error != nil {
+                    self.appleFallbackState = "ERROR"
+                }
+            }
+        }
+    }
+
+    private func stopAppleFallback() {
+        appleRequest?.endAudio()
+        appleTask?.cancel()
+        appleTask = nil
+        appleRequest = nil
+        appleRecognizer = nil
+        appleFormat = nil
+        appleLastText = ""
+        if appleFallbackState != "NO PERMISSION" { appleFallbackState = "IDLE" }
+    }
+
+    private func appendToAppleFallback(_ data: Data) {
+        guard let request = appleRequest, let format = appleFormat, data.count >= 2 else { return }
+        let frames = AVAudioFrameCount(data.count / 2)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+              let dst = buffer.int16ChannelData?[0] else { return }
+        buffer.frameLength = frames
+        data.withUnsafeBytes { raw in
+            guard let src = raw.baseAddress else { return }
+            memcpy(dst, src, Int(frames) * MemoryLayout<Int16>.size)
+        }
+        request.append(buffer)
     }
 
     private func loadModel() {
