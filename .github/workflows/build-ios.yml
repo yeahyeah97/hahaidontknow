@@ -23,12 +23,16 @@ jobs:
         run: |
           set -euo pipefail
           MODEL_DIR="G2LAB/Resources/Models/KrokoIT"
-          BASE="https://huggingface.co/Banafo/Kroko-ASR/resolve/c71bb4008f7c3255e13e780122f1f45a62d6559e"
+          BASE="https://huggingface.co/hudaiapa88/sherpa-stt-onnx/resolve/main/models/it/kroko_64l"
           mkdir -p "$MODEL_DIR"
-          curl -L --fail --retry 3 "$BASE/it_encoder.onnx?download=true" -o "$MODEL_DIR/it_encoder.onnx"
-          curl -L --fail --retry 3 "$BASE/it_decoder.onnx?download=true" -o "$MODEL_DIR/it_decoder.onnx"
-          curl -L --fail --retry 3 "$BASE/it_joiner.onnx?download=true" -o "$MODEL_DIR/it_joiner.onnx"
-          curl -L --fail --retry 3 "$BASE/it_tokens.txt?download=true" -o "$MODEL_DIR/it_tokens.txt"
+          curl -L --fail --retry 3 "$BASE/encoder.int8.onnx?download=true" -o "$MODEL_DIR/it_encoder.onnx"
+          curl -L --fail --retry 3 "$BASE/decoder.int8.onnx?download=true" -o "$MODEL_DIR/it_decoder.onnx"
+          curl -L --fail --retry 3 "$BASE/joiner.int8.onnx?download=true" -o "$MODEL_DIR/it_joiner.onnx"
+          curl -L --fail --retry 3 "$BASE/tokens.txt?download=true" -o "$MODEL_DIR/it_tokens.txt"
+          test "$(wc -c < "$MODEL_DIR/it_encoder.onnx")" -gt 1000000
+          test "$(wc -c < "$MODEL_DIR/it_decoder.onnx")" -gt 100000
+          test "$(wc -c < "$MODEL_DIR/it_joiner.onnx")" -gt 100000
+          test "$(wc -c < "$MODEL_DIR/it_tokens.txt")" -gt 1000
           ls -lh "$MODEL_DIR"
       - name: Generate Xcode project
         run: xcodegen generate
