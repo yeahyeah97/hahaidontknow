@@ -66,7 +66,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
                 Task { @MainActor in self?.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B") }
             }
         }
-        direct.start()
+        // Do not start the restoration-enabled CoreBluetooth central during
+        // @MainActor object construction. Let iOS finish launching first.
+        DispatchQueue.main.async { [weak self] in
+            self?.direct.start()
+        }
 
         italian.onText = { [weak self] text, isFinal in
             guard let self else { return }
