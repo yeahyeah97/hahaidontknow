@@ -83,6 +83,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     var italianPartials: Int { italian.partialCount }
     var italianFinals: Int { italian.finalCount }
     var italianInferenceMs: Double { italian.lastInferenceMs }
+    var italianAppleState: String { italian.appleFallbackState }
 
     private let menuItems = [
         "ITALIAN LIVE CAPTIONS",
@@ -95,7 +96,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     override init() {
         super.init()
         // Important: launch does not construct Mentra, Sherpa/ONNX, or CoreBluetooth.
-        log("G2 LAB v0.4.2 build 9 — cold launch safe")
+        log("G2 LAB v0.4.3 build 10 — cold launch safe")
     }
 
 
