@@ -8,6 +8,9 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var logs: [String] = []
     @Published var micLevel: Double = 0
     @Published var micEnabled = false
+    @Published var batteryLevel: Int? = nil
+    @Published var batteryCharging = false
+    @Published var signalDbm: Int? = nil
 
     @Published var menuVisible = false
     @Published var menuSelection = 0
@@ -17,7 +20,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var captionStatus = "ITALIAN OFFLINE • IDLE"
 
     private let sdk = MentraBluetoothSDK(configuration: .default)
-    private let italian = OfflineItalianRecognizer()
+    private let italian = WhisperItalianRecognizer()
 
     private var reconnectTask: Task<Void, Never>?
     private var captionHoldTask: Task<Void, Never>?
@@ -31,7 +34,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         "ITALIAN LIVE CAPTIONS",
         "MIC TOGGLE",
         "CLEAR HUD",
-        "CONNECTION STATUS"
+        "CONNECTION STATUS",
+        "CLOSE MENU"
     ]
 
     override init() {
@@ -187,7 +191,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         switch name {
         case "double_tap":
             if menuVisible {
-                closeMenu()
+                activateMenuItem()
             } else {
                 openMenu()
             }
@@ -195,6 +199,9 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         case "single_tap":
             if menuVisible {
                 activateMenuItem()
+            } else if captionsEnabled && !lastRenderedCaption.isEmpty {
+                sendCaptionHUD(lastRenderedCaption)
+                restartCaptionHoldTimer()
             }
 
         case "swipe_up":
@@ -226,6 +233,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         case 3:
             menuVisible = false
             showConnectionStatus()
+        case 4:
+            closeMenu()
         default:
             break
         }
@@ -337,6 +346,13 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             guard !Task.isCancelled else { return }
             guard self.captionsEnabled, !self.menuVisible else { return }
 
+            if !self.currentPartialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.commitFinalCaption(self.currentPartialText)
+                self.currentPartialText = ""
+                self.captionText = self.combinedCaptionText()
+                self.italian.resetSession()
+            }
+
             do {
                 try await self.sdk.clearDisplay()
                 self.log("Caption HUD idle clear after 5s — transcript retained")
@@ -388,7 +404,10 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didUpdateGlasses glasses: GlassesRuntimeState) {
         status = glasses.connected ? "CONNECTED" : "DISCONNECTED"
-        log("GLASSES: \(status)")
+        batteryLevel = glasses.battery?.level
+        batteryCharging = glasses.battery?.charging ?? false
+        signalDbm = glasses.signal?.strengthDbm
+        log("GLASSES: \(status) battery=\(batteryLevel.map(String.init) ?? "unknown")")
 
         if glasses.connected {
             hasConnectedOnce = true
