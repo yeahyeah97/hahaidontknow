@@ -19,6 +19,11 @@ jobs:
           xcodebuild -version
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Download bundled Italian ASR model
+        run: |
+          mkdir -p G2LAB/Resources/Models
+          curl -L --fail --retry 3             "https://huggingface.co/LocalAI-io/whisper-small-it-multi-yodas-asr_only-nocv-ggml/resolve/main/ggml-model-q5_0.bin?download=true"             -o G2LAB/Resources/Models/ggml-model-q5_0.bin
+          ls -lh G2LAB/Resources/Models/ggml-model-q5_0.bin
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve Swift packages
@@ -31,15 +36,15 @@ jobs:
         run: |
           APP="build/DerivedData/Build/Products/Release-iphoneos/G2LAB.app"
           test -d "$APP"
-          rm -rf Payload G2_LAB_v0.1-unsigned.ipa
+          rm -rf Payload G2_LAB_v0.2-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry G2_LAB_v0.1-unsigned.ipa Payload
+          /usr/bin/zip -qry G2_LAB_v0.2-unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: G2_LAB_v0.1_unsigned_IPA
-          path: G2_LAB_v0.1-unsigned.ipa
+          name: G2_LAB_v0.2_unsigned_IPA
+          path: G2_LAB_v0.2-unsigned.ipa
           retention-days: 7
       - name: Upload build log on failure
         if: failure()
