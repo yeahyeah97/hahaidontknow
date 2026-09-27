@@ -52,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.4.2 b9")
+                Text("ACCESSIBILITY ENGINE  •  v0.4.3 b10")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -281,7 +281,7 @@ struct ContentView: View {
                     Text("MIC: \(g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
                     Text("PCM: \(g2.pcmActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
                     Text(String(format: "LEVEL: %.3f", g2.micLevel))
-                    Text("ASR MODEL: \(g2.italianModelState)")
+                    Text("ASR MODEL: \(g2.italianModelState)")\n                    Text("APPLE OFFLINE: \(g2.italianAppleState)")
                     Text("ASR PCM IN: \(g2.italianPCMIn)")
                     Text("ASR QUEUED: \(g2.italianQueued)")
                     Text("ASR PROCESSED: \(g2.italianProcessed)")
