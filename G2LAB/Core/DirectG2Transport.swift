@@ -960,6 +960,11 @@ extension DirectG2Transport: CBPeripheralDelegate {
             return
         }
         let suffix = String(characteristic.uuid.uuidString.suffix(4)).uppercased()
+        if suffix == Self.commandNotifySuffix,
+           error != nil || !characteristic.isNotifying {
+            recoverPeripheral(peripheral, reason: "5402 notify unavailable")
+            return
+        }
         if let error {
             onLog?("DIRECT: notify \(suffix) failed \(error.localizedDescription)")
         } else {
