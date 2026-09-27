@@ -50,7 +50,7 @@ jobs:
           xcodebuild -project G2LAB.xcodeproj -scheme G2LAB -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee build.log
       - name: Package unsigned IPA
         run: |
-          APP="build/DerivedData/Build/Products/Release-iphoneos/G2LAB.app"
+          APP="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
           test -d "$APP"
           rm -rf Payload G2_ACCESS_v0.5.0-b1-unsigned.ipa
           mkdir Payload
