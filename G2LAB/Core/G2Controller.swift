@@ -62,6 +62,18 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
 
+    func backgroundRefreshPulse() {
+        log("APP: BACKGROUND REFRESH")
+        guard status != "CONNECTED", hasConnectedOnce else { return }
+        do {
+            try sdk.connectDefault()
+            log("APP: background refresh reconnect requested")
+        } catch {
+            log("BACKGROUND REFRESH RECONNECT ERROR: \(error.localizedDescription)")
+            scheduleReconnect()
+        }
+    }
+
     func appDidBecomeActive() {
         log("APP: ACTIVE")
         if status != "CONNECTED", hasConnectedOnce {
