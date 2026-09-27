@@ -131,11 +131,6 @@ final class StreamingItalianRecognizer: ObservableObject {
                 self.lastInferenceMs = result.decodeMs
                 self.status = String(format: "KROKO IT • %.0f ms", result.decodeMs)
 
-                if !result.text.isEmpty, result.text != self.lastEmittedText {
-                    self.lastEmittedText = result.text
-                    self.onText?(result.text, result.endpoint)
-                }
-
                 if result.endpoint {
                     if !result.text.isEmpty {
                         self.onText?(result.text, true)
@@ -144,6 +139,9 @@ final class StreamingItalianRecognizer: ObservableObject {
                     self.queue.async { [worker] in
                         worker.reset()
                     }
+                } else if !result.text.isEmpty, result.text != self.lastEmittedText {
+                    self.lastEmittedText = result.text
+                    self.onText?(result.text, false)
                 }
             }
         }
