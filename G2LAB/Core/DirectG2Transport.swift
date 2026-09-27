@@ -115,7 +115,7 @@ final class DirectG2Transport: NSObject {
     private func scan() {
         guard let central, central.state == .poweredOn else { return }
         onLog?("DIRECT: scanning for Even G2 L/R")
-        central.scanForPeripherals(
+        central?.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
