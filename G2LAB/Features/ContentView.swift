@@ -52,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.4.0 b7")
+                Text("ACCESSIBILITY ENGINE  •  v0.4.1 b8")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -114,7 +114,7 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     statusPill(icon: "wave.3.right", title: "BLE", value: signalText)
                     statusPill(icon: "mic.fill", title: "MIC", value: g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))
-                    statusPill(icon: "captions.bubble.fill", title: "ASR", value: g2.captionsEnabled ? "LIVE" : "OFF")
+                    statusPill(icon: "captions.bubble.fill", title: "ASR", value: g2.asrLive ? "LIVE" : (g2.captionsEnabled ? "WAITING" : "OFF"))
                 }
             } else {
                 VStack(spacing: 10) {
@@ -256,7 +256,7 @@ struct ContentView: View {
                 .font(.headline)
 
             HStack {
-                metric("LINK", g2.linkReady ? "VERIFIED" : "OFF")
+                metric("LINK", g2.linkDebugState)
                 metric("LEVEL", String(format: "%.3f", g2.micLevel))
                 metric("HUD", g2.linkReady ? "READY" : "OFF")
             }
@@ -272,6 +272,20 @@ struct ContentView: View {
     private var diagnostics: some View {
         DisclosureGroup(isExpanded: $showDiagnostics) {
             VStack(alignment: .leading, spacing: 3) {
+                Group {
+                    Text("LINK: \(g2.linkDebugState)")
+                    Text("6402 RX: \(g2.audioNotificationCount)")
+                    Text("205B: \(g2.audio205Count)")
+                    Text("BAD: \(g2.audioInvalidCount)")
+                    Text("MIC CTRL: \(g2.micControlState)")
+                    Text("MIC: \(g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
+                    Text("PCM: \(g2.pcmActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))")
+                    Text(String(format: "LEVEL: %.3f", g2.micLevel))
+                }
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+
+                Divider().padding(.vertical, 7)
+
                 ForEach(Array(g2.logs.prefix(50).enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.system(size: 9, design: .monospaced))
@@ -363,3 +377,4 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+

@@ -12,6 +12,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var micActive = false
     @Published var pcmActive = false
     @Published var asrLive = false
+    @Published var linkDebugState = "CONNECTING"
+    @Published var audioNotificationCount = 0
+    @Published var audio205Count = 0
+    @Published var audioInvalidCount = 0
+    @Published var micControlState = "IDLE"
     private var lc3: G2LC3Decoder?
     @Published var batteryLevel: Int? = nil
     @Published var batteryCharging = false
@@ -79,7 +84,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     override init() {
         super.init()
         // Important: launch does not construct Mentra, Sherpa/ONNX, or CoreBluetooth.
-        log("G2 LAB v0.4.0 build 7 — cold launch safe")
+        log("G2 LAB v0.4.1 build 8 — cold launch safe")
     }
 
 
@@ -110,12 +115,15 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
         transport.onPacket = { [weak self] side, data in
             guard data.count >= 8 else { return }
-            let svc = String(format: "%02X%02X", data[6], data[7])
+            let svc = String(format: "%02X-%02X", data[6], data[7])
+            var message = "?"
+            if data.count > 10, let tag = data[8..<(data.count - 2)].firstIndex(of: 0x10),
+               tag + 1 < data.count - 2 {
+                message = String(data[tag + 1])
+            }
             Task { @MainActor in
                 guard let self else { return }
-                if self.logs.first?.contains("DIRECT RX") != true {
-                    self.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B")
-                }
+                self.log("DIRECT RX \(side.rawValue) svc=\(svc) msg=\(message) size=\(data.count)")
             }
         }
 
@@ -123,14 +131,31 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             // CoreBluetooth uses the main queue; process the 50-ms packet immediately.
             MainActor.assumeIsolated { self?.acceptMicPacket(data) }
         }
-        transport.onMicUnavailable = { [weak self] in
-            MainActor.assumeIsolated { self?.stopAudioSession() }
+        transport.onMicSessionInterrupted = { [weak self] in
+            MainActor.assumeIsolated { self?.resetMicEvidenceForReconnect() }
+        }
+        transport.onAudioDiagnostics = { [weak self] total, valid, invalid in
+            MainActor.assumeIsolated {
+                self?.audioNotificationCount = total
+                self?.audio205Count = valid
+                self?.audioInvalidCount = invalid
+            }
+        }
+        transport.onMicControlState = { [weak self] state in
+            MainActor.assumeIsolated { self?.micControlState = state }
+        }
+        transport.onLinkStateChanged = { [weak self] state in
+            MainActor.assumeIsolated {
+                self?.linkDebugState = state
+                self?.status = "DIRECT \(state)"
+            }
         }
 
         transport.onProtocolReady = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 self.status = "DIRECT G2 READY"
+                self.linkDebugState = "VERIFIED"
                 self.log("DIRECT: protocol init complete")
                 if self.micEnabled {
                     self.direct?.setMicEnabled(true)
@@ -181,16 +206,10 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func connect(_ device: Device) {
-        status = "CONNECTING"
-        log("Connecting: \(device.name)")
-        do {
-            try sdk.connect(to: device)
-            sdk.setDefaultDevice(device)
-            log("Saved G2 as default device")
-        } catch {
-            status = "CONNECT ERROR"
-            log("CONNECT ERROR: \(error.localizedDescription)")
-        }
+        status = "DIRECT CONNECTING"
+        linkDebugState = "CONNECTING"
+        log("DIRECT: manual reconnect requested for \(device.name)")
+        startDirectTransportIfNeeded()
     }
 
     func disconnect() {
@@ -278,6 +297,25 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         captionHoldTask?.cancel()
         captionHoldTask = nil
         captionStatus = "ITALIAN OFFLINE • IDLE"
+    }
+
+    private func resetMicEvidenceForReconnect() {
+        micActive = false
+        pcmActive = false
+        asrLive = false
+        micLevel = 0
+        micPacketCount = 0
+        guard micEnabled else {
+            lc3 = nil
+            micControlState = "IDLE"
+            return
+        }
+        micControlState = "WAITING"
+        lc3 = G2LC3Decoder()
+        if captionsEnabled {
+            italian.resetSession()
+            captionStatus = "RECOVERING G2 MICROPHONE"
+        }
     }
 
     private func acceptMicPacket(_ data: Data) {
@@ -571,3 +609,4 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         // SDK log payloads are not part of the metadata-only diagnostics contract.
     }
 }
+

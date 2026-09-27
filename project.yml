@@ -23,8 +23,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.app
-        MARKETING_VERSION: 0.4.0
-        CURRENT_PROJECT_VERSION: 7
+        MARKETING_VERSION: 0.4.1
+        CURRENT_PROJECT_VERSION: 8
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: 5.9
         SWIFT_OBJC_BRIDGING_HEADER: G2LAB/G2LAB-Bridging-Header.h
@@ -54,3 +54,4 @@ targets:
         product: MentraBluetoothSDK
       - package: SherpaOnnx
         product: sherpa-onnx
+

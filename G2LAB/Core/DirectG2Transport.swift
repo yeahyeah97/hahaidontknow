@@ -25,13 +25,18 @@ final class DirectG2Transport: NSObject {
     var onPacket: ((Side, Data) -> Void)?
     var onMicPacket: ((Data) -> Void)?
     var onProtocolReady: (() -> Void)?
+    var onMicSessionInterrupted: (() -> Void)?
+    var onAudioDiagnostics: ((_ total: Int, _ valid205: Int, _ invalid: Int) -> Void)?
+    var onMicControlState: ((String) -> Void)?
+    var onLinkStateChanged: ((String) -> Void)?
 
     private var central: CBCentralManager?
     private var lenses: [UUID: Lens] = [:]
     private var heartbeat: Timer?
     private var protocolStarted = false
     private(set) var isProtocolReady = false
-    private var wantsMic = false
+    private var userWantsMic = false
+    private var shouldRun = false
     private var conversateStarted = false
     private var hudGeneration = 0
     private var captionDisplayReady = false
@@ -41,8 +46,18 @@ final class DirectG2Transport: NSObject {
     private static let commandWriteSuffix = "5401"
     private static let commandNotifySuffix = "5402"
     private static let audioUUID = "00002760-08C2-11E1-9073-0E8AC72E6402"
-    private var micOpened = false
-    var onMicUnavailable: (() -> Void)?
+    private var micOpenedForCurrentConnection = false
+    private var micAckedForCurrentConnection = false
+    private var pendingEnterMessageIDs = Set<UInt8>()
+    private var micAckDeadline: DispatchWorkItem?
+    private var recoveryWork: DispatchWorkItem?
+    private var scanWatchdog: DispatchWorkItem?
+    private var protocolWatchdog: DispatchWorkItem?
+    private var recoveryAttempt = 0
+    private var hasEnteredRecovery = false
+    private(set) var audioNotificationCount = 0
+    private(set) var audio205Count = 0
+    private(set) var audioInvalidCount = 0
     var micAvailable: Bool {
         lens(.left)?.micNotify?.isNotifying == true && lens(.right) != nil
     }
@@ -56,6 +71,7 @@ final class DirectG2Transport: NSObject {
     }
 
     func start() {
+        shouldRun = true
         if central == nil {
             onLog?("DIRECT: creating CBCentralManager on demand")
             central = CBCentralManager(
@@ -67,7 +83,11 @@ final class DirectG2Transport: NSObject {
         }
 
         if central?.state == .poweredOn {
-            scan()
+            if isProtocolReady {
+                onLog?("DIRECT: protocol already verified")
+                return
+            }
+            startFreshScan(recovering: !lenses.isEmpty || recoveryAttempt > 0)
         } else {
             onLog?("DIRECT: Bluetooth not powered on yet")
         }
@@ -75,6 +95,8 @@ final class DirectG2Transport: NSObject {
 
     func stop() {
         setMicEnabled(false)
+        shouldRun = false
+        cancelRecoveryTimers()
         hudGeneration += 1
         captionDisplayReady = false
         captionInitializing = false
@@ -93,12 +115,16 @@ final class DirectG2Transport: NSObject {
     }
 
     func setMicEnabled(_ enabled: Bool) {
-        wantsMic = enabled
+        userWantsMic = enabled
+        if !enabled {
+            disableMicPath()
+            return
+        }
         guard isProtocolReady else {
             onLog?("DIRECT MIC: \(enabled ? "armed — waiting for protocol ready" : "off")")
             return
         }
-        enabled ? enableMicPath() : disableMicPath()
+        enableMicPath()
     }
 
     func showText(_ text: String, final: Bool = true) {
@@ -249,13 +275,131 @@ final class DirectG2Transport: NSObject {
         send(serviceHi: 0x06, serviceLo: 0x20, payload: payload)
     }
 
-    private func scan() {
-        guard let central, central.state == .poweredOn else { return }
-        onLog?("DIRECT: scanning for Even G2 L/R")
+    private func startFreshScan(recovering: Bool) {
+        guard shouldRun, let central, central.state == .poweredOn else { return }
+        recoveryWork?.cancel()
+        recoveryWork = nil
+        scanWatchdog?.cancel()
+        central.stopScan()
+
+        let staleIDs = lenses.compactMap { id, lens in
+            lens.peripheral.state == .connected ? nil : id
+        }
+        for id in staleIDs {
+            guard let lens = lenses[id] else { continue }
+            if lens.peripheral.state == .connecting {
+                central.cancelPeripheralConnection(lens.peripheral)
+            }
+            lens.peripheral.delegate = nil
+            lenses.removeValue(forKey: id)
+        }
+        publishReady()
+
+        onLinkStateChanged?(recovering ? "RECOVERING" : "CONNECTING")
+        onLog?(recovering
+            ? "RECOVERY: rescan attempt \(max(1, recoveryAttempt))"
+            : "DIRECT: scanning for Even G2 L/R")
         central.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
+        if hasBothUsableLenses {
+            central.stopScan()
+            tryStartProtocol()
+        }
+        armScanWatchdog()
+    }
+
+    private func armScanWatchdog() {
+        scanWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldRun, !self.hasBothUsableLenses else { return }
+            let missing = [Side.left, .right]
+                .filter { self.lens($0) == nil }
+                .map(\.rawValue)
+                .joined(separator: "+")
+            self.onLog?("RECOVERY: scan watchdog missing \(missing.isEmpty ? "usable channels" : missing)")
+            let unusableIDs = self.lenses.compactMap { id, lens in
+                lens.commandReady ? nil : id
+            }
+            for id in unusableIDs {
+                guard let lens = self.lenses.removeValue(forKey: id) else { continue }
+                lens.peripheral.delegate = nil
+                self.central?.cancelPeripheralConnection(lens.peripheral)
+            }
+            self.resetConnectionState(interruptMic: true)
+            self.publishReady()
+            self.scheduleRecovery()
+        }
+        scanWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
+    }
+
+    private var hasBothUsableLenses: Bool {
+        lens(.left) != nil && lens(.right) != nil
+    }
+
+    private func cancelRecoveryTimers() {
+        recoveryWork?.cancel()
+        recoveryWork = nil
+        scanWatchdog?.cancel()
+        scanWatchdog = nil
+        protocolWatchdog?.cancel()
+        protocolWatchdog = nil
+        micAckDeadline?.cancel()
+        micAckDeadline = nil
+    }
+
+    private func scheduleRecovery() {
+        guard shouldRun, central?.state == .poweredOn, recoveryWork == nil else { return }
+        hasEnteredRecovery = true
+        onLinkStateChanged?("RECOVERING")
+        let delays: [Double] = [0.5, 1, 2, 4, 5]
+        let delay = delays[min(recoveryAttempt, delays.count - 1)]
+        recoveryAttempt += 1
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.recoveryWork = nil
+            self.startFreshScan(recovering: true)
+        }
+        recoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func resetConnectionState(interruptMic: Bool) {
+        protocolStarted = false
+        isProtocolReady = false
+        conversateStarted = false
+        micOpenedForCurrentConnection = false
+        micAckedForCurrentConnection = false
+        pendingEnterMessageIDs.removeAll()
+        micAckDeadline?.cancel()
+        micAckDeadline = nil
+        protocolWatchdog?.cancel()
+        protocolWatchdog = nil
+        heartbeat?.invalidate()
+        heartbeat = nil
+        hudGeneration += 1
+        captionDisplayReady = false
+        captionInitializing = false
+        if interruptMic { onMicSessionInterrupted?() }
+        if userWantsMic { onMicControlState?("WAITING") }
+        onLog?("RECOVERY: reset transport state")
+    }
+
+    private func recoverPeripheral(_ peripheral: CBPeripheral, reason: String) {
+        guard let lens = lenses.removeValue(forKey: peripheral.identifier) else { return }
+        onLog?("RECOVERY: \(reason) \(lens.side.rawValue)")
+        lens.commandReady = false
+        lens.commandWrite = nil
+        lens.commandNotify = nil
+        lens.micNotify = nil
+        peripheral.delegate = nil
+        central?.cancelPeripheralConnection(peripheral)
+        hasEnteredRecovery = true
+        resetConnectionState(interruptMic: true)
+        publishReady()
+        scheduleRecovery()
     }
 
     private func side(for name: String) -> Side? {
@@ -268,10 +412,21 @@ final class DirectG2Transport: NSObject {
 
     private func attach(_ peripheral: CBPeripheral, side: Side) {
         guard lenses[peripheral.identifier] == nil else { return }
+        let sameSideIDs = lenses.compactMap { id, existing in
+            existing.side == side ? id : nil
+        }
+        for id in sameSideIDs {
+            guard let existing = lenses[id] else { continue }
+            guard existing.peripheral.state != .connected else { return }
+            existing.peripheral.delegate = nil
+            lenses.removeValue(forKey: id)
+        }
         let lens = Lens(side: side, peripheral: peripheral)
         lenses[peripheral.identifier] = lens
         peripheral.delegate = self
-        onLog?("DIRECT: found \(side.rawValue) \(peripheral.name ?? peripheral.identifier.uuidString)")
+        onLog?(hasEnteredRecovery
+            ? "RECOVERY: rediscovered \(side.rawValue)"
+            : "DIRECT: found \(side.rawValue) \(peripheral.name ?? peripheral.identifier.uuidString)")
         central?.connect(
             peripheral,
             options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
@@ -294,9 +449,12 @@ final class DirectG2Transport: NSObject {
     }
 
     private func tryStartProtocol() {
-        guard !protocolStarted, let primary = primaryLens() else { return }
+        guard !protocolStarted, hasBothUsableLenses, let primary = primaryLens() else { return }
         protocolStarted = true
-        onLog?("DIRECT: L command channel ready; starting capture-derived auth")
+        scanWatchdog?.cancel()
+        scanWatchdog = nil
+        onLog?("DIRECT: L+R command channels ready; starting capture-derived auth")
+        armProtocolWatchdog()
 
         let auth = authPackets()
         for (index, packet) in auth.enumerated() {
@@ -310,6 +468,24 @@ final class DirectG2Transport: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) { [weak self] in
             self?.sendCoreInit()
         }
+    }
+
+    private func armProtocolWatchdog() {
+        protocolWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldRun, !self.isProtocolReady else { return }
+            self.onLog?("RECOVERY: RIGHT protocol verification timeout")
+            if let right = self.lenses.first(where: { $0.value.side == .right }) {
+                self.lenses.removeValue(forKey: right.key)
+                right.value.peripheral.delegate = nil
+                self.central?.cancelPeripheralConnection(right.value.peripheral)
+            }
+            self.resetConnectionState(interruptMic: true)
+            self.publishReady()
+            self.scheduleRecovery()
+        }
+        protocolWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
     private func sendCoreInit() {
@@ -394,23 +570,51 @@ final class DirectG2Transport: NSObject {
     }
 
     private func enableMicPath() {
-        guard wantsMic, !micOpened, isProtocolReady, micAvailable else { return }
-        micOpened = true
+        guard userWantsMic, !micOpenedForCurrentConnection, isProtocolReady, micAvailable else { return }
+        micOpenedForCurrentConnection = true
+        micAckedForCurrentConnection = false
+        pendingEnterMessageIDs.removeAll()
         sendMicControl(status: 2)
         onLog?("MIC OPEN: CTRL ENTER queued L+R; awaiting audio")
+        onMicControlState?("ENTER SENT")
+        armMicAckDeadline()
     }
 
     private func disableMicPath() {
-        if micOpened { sendMicControl(status: 3) }
-        micOpened = false
+        micAckDeadline?.cancel()
+        micAckDeadline = nil
+        pendingEnterMessageIDs.removeAll()
+        if micOpenedForCurrentConnection, isProtocolReady { sendMicControl(status: 3) }
+        micOpenedForCurrentConnection = false
+        micAckedForCurrentConnection = false
         onLog?("MIC CLOSE: CTRL EXIT queued L+R")
+        onMicControlState?("IDLE")
     }
 
     private func sendMicControl(status: UInt8) {
-        let payload: [UInt8] = [0x08, 0x01, 0x10, nextMsgID(), 0x1A, 0x02, 0x08, status]
         for side in [Side.left, .right] {
+            let messageID = nextMsgID()
+            let payload: [UInt8] = [0x08, 0x01, 0x10, messageID, 0x1A, 0x02, 0x08, status]
+            if status == 2 {
+                pendingEnterMessageIDs.insert(messageID)
+                onLog?("MIC CTRL ENTER TX \(side.rawValue) msg=\(messageID)")
+            } else {
+                onLog?("MIC CTRL EXIT TX \(side.rawValue) msg=\(messageID)")
+            }
             send(to: side, serviceHi: 0x07, serviceLo: 0x20, payload: payload)
         }
+    }
+
+    private func armMicAckDeadline() {
+        micAckDeadline?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.userWantsMic, self.micOpenedForCurrentConnection,
+                  !self.micAckedForCurrentConnection else { return }
+            self.onLog?("MIC CTRL: NO 07-20 RESPONSE AFTER ENTER")
+            self.onMicControlState?("NO RESPONSE")
+        }
+        micAckDeadline = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     private func startHeartbeat() {
@@ -526,6 +730,17 @@ final class DirectG2Transport: NSObject {
         return out
     }
 
+    private static func protobufMessageID(in packet: Data) -> UInt8? {
+        guard packet.count > 10 else { return nil }
+        let payloadEnd = max(8, packet.count - 2)
+        var index = 8
+        while index + 1 < payloadEnd {
+            if packet[index] == 0x10 { return packet[index + 1] }
+            index += 1
+        }
+        return nil
+    }
+
     private static func crc16(_ data: Data) -> UInt16 {
         var crc: UInt16 = 0xFFFF
         for byte in data {
@@ -596,7 +811,28 @@ final class DirectG2Transport: NSObject {
 extension DirectG2Transport: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         onLog?("DIRECT: central state=\(central.state.rawValue)")
-        if central.state == .poweredOn { scan() }
+        switch central.state {
+        case .poweredOn:
+            if shouldRun { startFreshScan(recovering: hasEnteredRecovery) }
+        case .poweredOff:
+            guard shouldRun else { return }
+            hasEnteredRecovery = true
+            cancelRecoveryTimers()
+            resetConnectionState(interruptMic: true)
+            for lens in lenses.values {
+                lens.commandReady = false
+                lens.commandWrite = nil
+                lens.commandNotify = nil
+                lens.micNotify = nil
+                lens.peripheral.delegate = nil
+            }
+            lenses.removeAll()
+            publishReady()
+            onLinkStateChanged?("RECOVERING")
+            onLog?("RECOVERY: Bluetooth powered off")
+        default:
+            break
+        }
     }
 
     func centralManager(
@@ -619,7 +855,9 @@ extension DirectG2Transport: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         guard let lens = lenses[peripheral.identifier] else { return }
-        onLog?("DIRECT: BLE connected \(lens.side.rawValue)")
+        onLog?(hasEnteredRecovery
+            ? "RECOVERY: connected \(lens.side.rawValue)"
+            : "DIRECT: BLE connected \(lens.side.rawValue)")
         peripheral.delegate = self
         peripheral.discoverServices(nil)
     }
@@ -630,30 +868,18 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         error: Error?
     ) {
         guard let lens = lenses[peripheral.identifier] else { return }
-        setMicEnabled(false)
-        onMicUnavailable?()
-        hudGeneration += 1
-        captionDisplayReady = false
-        captionInitializing = false
+        let side = lens.side
         lens.commandReady = false
         lens.commandWrite = nil
         lens.commandNotify = nil
         lens.micNotify = nil
+        lens.peripheral.delegate = nil
+        lenses.removeValue(forKey: peripheral.identifier)
+        onLog?("RECOVERY: disconnect \(side.rawValue)")
+        hasEnteredRecovery = true
+        resetConnectionState(interruptMic: true)
         publishReady()
-
-        if lens.side == .right {
-            protocolStarted = false
-            isProtocolReady = false
-            conversateStarted = false
-            heartbeat?.invalidate()
-            heartbeat = nil
-        }
-
-        onLog?("DIRECT: \(lens.side.rawValue) disconnected — reconnecting")
-        central.connect(
-            peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
-        )
+        scheduleRecovery()
     }
 
     func centralManager(
@@ -661,10 +887,9 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
-        onLog?("DIRECT: connect failed \(error?.localizedDescription ?? "unknown")")
-        central.connect(
+        recoverPeripheral(
             peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
+            reason: "connect failed: \(error?.localizedDescription ?? "unknown")"
         )
     }
 }
@@ -673,6 +898,7 @@ extension DirectG2Transport: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             onLog?("DIRECT: service discovery error \(error.localizedDescription)")
+            recoverPeripheral(peripheral, reason: "service discovery failed")
             return
         }
 
@@ -688,6 +914,7 @@ extension DirectG2Transport: CBPeripheralDelegate {
     ) {
         if let error {
             onLog?("DIRECT: characteristic error \(error.localizedDescription)")
+            recoverPeripheral(peripheral, reason: "characteristic discovery failed")
             return
         }
         guard let lens = lenses[peripheral.identifier] else { return }
@@ -725,8 +952,7 @@ extension DirectG2Transport: CBPeripheralDelegate {
                 onLog?("6402 LEFT NOTIFY ON")
                 enableMicPath()
             } else {
-                setMicEnabled(false)
-                onMicUnavailable?()
+                recoverPeripheral(peripheral, reason: "LEFT 6402 notify unavailable")
             }
             return
         }
@@ -747,23 +973,64 @@ extension DirectG2Transport: CBPeripheralDelegate {
               let lens = lenses[peripheral.identifier] else { return }
 
         let uuid = characteristic.uuid.uuidString.uppercased()
-        // Audio is fenced off before any generic notification/logging path.
         if uuid == Self.audioUUID {
-            if lens.side == .left && wantsMic && micOpened { onMicPacket?(data) }
+            guard lens.side == .left else { return }
+            audioNotificationCount += 1
+            onLog?("6402 RX #\(audioNotificationCount) size=\(data.count)")
+            if audioNotificationCount == 1 {
+                onLog?("6402 FIRST PACKET size=\(data.count)")
+            }
+            if data.count == 205 {
+                audio205Count += 1
+                onLog?("6402 VALID 205B seq=\(data[204])")
+            } else {
+                audioInvalidCount += 1
+                onLog?("6402 INVALID SIZE=\(data.count)")
+            }
+            onAudioDiagnostics?(audioNotificationCount, audio205Count, audioInvalidCount)
+            if data.count == 205, userWantsMic { onMicPacket?(data) }
             return
         }
         if uuid.hasSuffix(Self.commandNotifySuffix) {
             onPacket?(lens.side, data)
+            let serviceHi = data.count > 6 ? data[6] : 0
+            let serviceLo = data.count > 7 ? data[7] : 0
+            let incomingMessageID = Self.protobufMessageID(in: data)
+            if serviceHi == 0x07, serviceLo == 0x20 {
+                let message = incomingMessageID.map(String.init) ?? "?"
+                onLog?("MIC CTRL RX \(lens.side.rawValue) svc=07-20 msg=\(message)")
+                if micOpenedForCurrentConnection,
+                   let incomingMessageID,
+                   pendingEnterMessageIDs.contains(incomingMessageID) {
+                    onLog?("MIC CTRL ACK \(lens.side.rawValue) svc=07-20 msg=\(message)")
+                    micAckedForCurrentConnection = true
+                    pendingEnterMessageIDs.remove(incomingMessageID)
+                    micAckDeadline?.cancel()
+                    micAckDeadline = nil
+                    onMicControlState?("ACK")
+                }
+            }
 
             // Do not declare protocol readiness on a timer. A real response from
             // the RIGHT lens proves that the app-level handshake is alive.
-            if lens.side == .right, protocolStarted, !isProtocolReady {
+            if lens.side == .right, protocolStarted, hasBothUsableLenses, !isProtocolReady {
                 isProtocolReady = true
+                protocolWatchdog?.cancel()
+                protocolWatchdog = nil
+                recoveryWork?.cancel()
+                recoveryWork = nil
+                recoveryAttempt = 0
+                onLinkStateChanged?("VERIFIED")
                 onLog?("DIRECT: VERIFIED 5402 response from RIGHT — protocol READY")
+                if hasEnteredRecovery {
+                    onLog?("RECOVERY: protocol restored")
+                    hasEnteredRecovery = false
+                }
                 startHeartbeat()
                 onProtocolReady?()
-                if wantsMic { enableMicPath() }
+                if userWantsMic { enableMicPath() }
             }
         }
     }
 }
+
