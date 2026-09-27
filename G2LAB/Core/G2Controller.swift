@@ -44,6 +44,31 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         log("G2 LAB v0.2 boot")
     }
 
+
+    func appDidBecomeActive() {
+        log("APP: ACTIVE")
+        if status != "CONNECTED", hasConnectedOnce {
+            log("APP: foreground reconnect")
+            do {
+                try sdk.connectDefault()
+            } catch {
+                log("FOREGROUND RECONNECT ERROR: \(error.localizedDescription)")
+                scheduleReconnect()
+            }
+        }
+    }
+
+    func appDidEnterBackground() {
+        log("APP: BACKGROUND")
+        if status != "CONNECTED", hasConnectedOnce {
+            scheduleReconnect()
+        }
+    }
+
+    func appWillResignActive() {
+        log("APP: INACTIVE")
+    }
+
     func scan() {
         devices.removeAll()
         status = "SCANNING"
