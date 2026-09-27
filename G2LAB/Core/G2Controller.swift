@@ -7,6 +7,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var devices: [Device] = []
     @Published var logs: [String] = []
     @Published var micLevel: Double = 0
+    @Published var micPacketCount: Int = 0
     @Published var micEnabled = false
     @Published var batteryLevel: Int? = nil
     @Published var batteryCharging = false
