@@ -1,0 +1,31 @@
+name: G2LAB
+options:
+  bundleIdPrefix: com.g2lab
+  deploymentTarget:
+    iOS: '16.0'
+packages:
+  MentraBluetoothSDK:
+    url: https://github.com/Mentra-Community/mentra-bluetooth-sdk-ios.git
+    exactVersion: 0.1.21-beta.3
+targets:
+  G2LAB:
+    type: application
+    platform: iOS
+    sources: [G2LAB]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.app
+        SWIFT_VERSION: 5.9
+        TARGETED_DEVICE_FAMILY: '1'
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ''
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: G2 LAB
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: G2 LAB connects to Even Realities G2 over Bluetooth.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: G2 LAB uses microphone audio for captions and accessibility features when enabled.
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+    dependencies:
+      - package: MentraBluetoothSDK
+        product: MentraBluetoothSDK
