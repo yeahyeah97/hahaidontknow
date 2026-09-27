@@ -43,15 +43,18 @@ jobs:
           curl -L --fail --retry 3 https://github.com/google/liblc3/archive/96a3af0beb5487aca3b98a4b992a539a1f6d80d1.tar.gz | tar xz --strip-components=1 -C ThirdParty/liblc3
           cp ThirdParty/liblc3/LICENSE G2LAB/Resources/Licenses/liblc3-LICENSE.txt
           if [ -f ThirdParty/liblc3/NOTICE ]; then cp ThirdParty/liblc3/NOTICE G2LAB/Resources/Licenses/liblc3-NOTICE.txt; fi
+      - name: Namespace native LC3 to coexist with Mentra
+        run: python3 scripts/namespace_lc3.py
       - name: Test native audio pipeline on macOS
         run: |
           set -euo pipefail
           mkdir -p build/audio-tests
           for source in ThirdParty/liblc3/src/*.c G2LAB/Core/G2LC3Bridge.c Tests/Fixture.c; do
-            clang -O2 -IThirdParty/liblc3/include -IThirdParty/liblc3/src -c "$source" -o "build/audio-tests/$(basename "$source" .c).o"
+            clang -O2 -include ThirdParty/liblc3/g2_namespace.h -IThirdParty/liblc3/include -IThirdParty/liblc3/src -c "$source" -o "build/audio-tests/$(basename "$source" .c).o"
           done
           swiftc -import-objc-header Tests/Fixture.h G2LAB/Core/G2LC3Decoder.swift Tests/AudioPipelineTests.swift build/audio-tests/*.o -o build/audio-tests/run
           build/audio-tests/run
+          if nm -g build/audio-tests/*.o | grep -E " [TDS] _lc3_"; then exit 1; fi
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve Swift packages
