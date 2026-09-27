@@ -1,57 +1,116 @@
 import Foundation
-import whisper
+#if canImport(SherpaOnnx)
+import SherpaOnnx
+#elseif canImport(SherpaOnnxShared)
+import SherpaOnnxShared
+#endif
+
+private final class KrokoASRWorker {
+    var recognizer: SherpaOnnxRecognizer?
+
+    func load(encoder: String, decoder: String, joiner: String, tokens: String) {
+        let transducer = sherpaOnnxOnlineTransducerModelConfig(
+            encoder: encoder,
+            decoder: decoder,
+            joiner: joiner
+        )
+
+        let model = sherpaOnnxOnlineModelConfig(
+            tokens: tokens,
+            transducer: transducer,
+            numThreads: 2,
+            provider: "cpu",
+            debug: 0,
+            modelType: "zipformer2"
+        )
+
+        let features = sherpaOnnxFeatureConfig(
+            sampleRate: 16_000,
+            featureDim: 80
+        )
+
+        var config = sherpaOnnxOnlineRecognizerConfig(
+            featConfig: features,
+            modelConfig: model,
+            enableEndpoint: true,
+            rule1MinTrailingSilence: 0.8,
+            rule2MinTrailingSilence: 0.45,
+            rule3MinUtteranceLength: 15,
+            decodingMethod: "greedy_search",
+            maxActivePaths: 4
+        )
+
+        recognizer = SherpaOnnxRecognizer(config: &config)
+    }
+
+    func process(_ samples: [Float]) -> (text: String, endpoint: Bool, decodeMs: Double)? {
+        guard let recognizer else { return nil }
+
+        let started = CFAbsoluteTimeGetCurrent()
+        recognizer.acceptWaveform(samples: samples, sampleRate: 16_000)
+
+        var decodePasses = 0
+        while recognizer.isReady() && decodePasses < 16 {
+            recognizer.decode()
+            decodePasses += 1
+        }
+
+        let text = recognizer.getResult().text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let endpoint = recognizer.isEndpoint()
+        let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+        return (text, endpoint, elapsed)
+    }
+
+    func reset() {
+        recognizer?.reset()
+    }
+}
 
 @MainActor
-final class WhisperItalianRecognizer: ObservableObject {
-    @Published private(set) var status = "WHISPER • LOADING"
+final class StreamingItalianRecognizer: ObservableObject {
+    @Published private(set) var status = "KROKO IT • LOADING"
     @Published private(set) var isRunning = false
     @Published private(set) var modelReady = false
     @Published private(set) var lastInferenceMs: Double = 0
 
     var onText: ((String, Bool) -> Void)?
 
-    private var context: OpaquePointer?
-    private var samples: [Float] = []
-    private var lastInferenceAt = Date.distantPast
-    private var inferenceRunning = false
-
-    private let inferenceQueue = DispatchQueue(label: "com.g2lab.whisper", qos: .userInitiated)
-    private let sampleRate = 16_000
-    private let minSamples = 12_800          // 0.8 s
-    private let maxSamples = 64_000          // 4.0 s rolling window
-    private let inferenceInterval = 0.45     // aggressive partial updates
+    private let queue = DispatchQueue(label: "com.g2lab.kroko.streaming", qos: .userInitiated)
+    private let worker = KrokoASRWorker()
+    private var lastEmittedText = ""
 
     init() {
         loadModel()
     }
 
-    deinit {
-        if let context {
-            whisper_free(context)
-        }
-    }
-
     func start() {
         guard modelReady else {
-            status = "WHISPER MODEL NOT READY"
+            status = "KROKO IT • MODEL NOT READY"
             return
         }
         isRunning = true
-        status = "WHISPER ITALIAN • LIVE"
+        status = "KROKO IT • STREAMING"
     }
 
     func stop() {
         isRunning = false
-        status = modelReady ? "WHISPER ITALIAN • READY" : "WHISPER MODEL ERROR"
+        status = modelReady ? "KROKO IT • READY" : "KROKO IT • MODEL ERROR"
     }
 
     func resetSession() {
-        samples.removeAll(keepingCapacity: true)
-        lastInferenceAt = .distantPast
+        lastEmittedText = ""
+        queue.async { [worker] in
+            worker.reset()
+        }
     }
 
     func appendPCM16(_ data: Data) {
         guard isRunning, modelReady, data.count >= 2 else { return }
+
+        var samples = [Float]()
+        samples.reserveCapacity(data.count / 2)
 
         data.withUnsafeBytes { raw in
             let bytes = raw.bindMemory(to: UInt8.self)
@@ -64,97 +123,65 @@ final class WhisperItalianRecognizer: ObservableObject {
             }
         }
 
-        if samples.count > maxSamples {
-            samples.removeFirst(samples.count - maxSamples)
-        }
-
-        let now = Date()
-        guard samples.count >= minSamples,
-              !inferenceRunning,
-              now.timeIntervalSince(lastInferenceAt) >= inferenceInterval,
-              let context else { return }
-
-        lastInferenceAt = now
-        inferenceRunning = true
-
-        let snapshot = samples
-        let started = CFAbsoluteTimeGetCurrent()
-
-        inferenceQueue.async { [weak self] in
-            guard let self else { return }
-
-            var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-            params.n_threads = 4
-            params.translate = false
-            params.no_context = true
-            params.no_timestamps = true
-            params.single_segment = true
-            params.print_special = false
-            params.print_progress = false
-            params.print_realtime = false
-            params.print_timestamps = false
-            params.suppress_blank = true
-            params.suppress_non_speech_tokens = true
-            params.temperature = 0.0
-            params.max_tokens = 64
-
-            var resultText = ""
-            let rc: Int32 = "it".withCString { language in
-                params.language = language
-                return snapshot.withUnsafeBufferPointer { buffer in
-                    whisper_full(context, params, buffer.baseAddress, Int32(buffer.count))
-                }
-            }
-
-            if rc == 0 {
-                let count = whisper_full_n_segments(context)
-                if count > 0 {
-                    for i in 0..<count {
-                        if let c = whisper_full_get_segment_text(context, i) {
-                            resultText += String(cString: c)
-                        }
-                    }
-                }
-            }
-
-            let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
-            let cleaned = resultText
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "  ", with: " ")
+        queue.async { [weak self, worker] in
+            guard let result = worker.process(samples) else { return }
 
             DispatchQueue.main.async {
-                self.inferenceRunning = false
-                self.lastInferenceMs = elapsed
+                guard let self else { return }
+                self.lastInferenceMs = result.decodeMs
+                self.status = String(format: "KROKO IT • %.0f ms", result.decodeMs)
 
-                if rc != 0 {
-                    self.status = "WHISPER ERROR \(rc)"
-                    return
+                if !result.text.isEmpty, result.text != self.lastEmittedText {
+                    self.lastEmittedText = result.text
+                    self.onText?(result.text, result.endpoint)
                 }
 
-                self.status = String(format: "WHISPER ITALIAN • %.0f ms", elapsed)
-                if !cleaned.isEmpty {
-                    self.onText?(cleaned, false)
+                if result.endpoint {
+                    if !result.text.isEmpty {
+                        self.onText?(result.text, true)
+                    }
+                    self.lastEmittedText = ""
+                    self.queue.async { [worker] in
+                        worker.reset()
+                    }
                 }
             }
         }
     }
 
     private func loadModel() {
-        let direct = Bundle.main.path(forResource: "ggml-model-q5_0", ofType: "bin")
-        let nested = Bundle.main.path(forResource: "ggml-model-q5_0", ofType: "bin", inDirectory: "Models")
+        func modelPath(_ name: String, _ ext: String) -> String? {
+            Bundle.main.path(
+                forResource: name,
+                ofType: ext,
+                inDirectory: "Models/KrokoIT"
+            ) ?? Bundle.main.path(forResource: name, ofType: ext)
+        }
 
-        guard let path = direct ?? nested else {
-            status = "WHISPER MODEL MISSING"
+        guard
+            let encoder = modelPath("it_encoder", "onnx"),
+            let decoder = modelPath("it_decoder", "onnx"),
+            let joiner = modelPath("it_joiner", "onnx"),
+            let tokens = modelPath("it_tokens", "txt")
+        else {
+            status = "KROKO IT • MODEL FILES MISSING"
             return
         }
 
-        inferenceQueue.async { [weak self] in
-            guard let self else { return }
-            let ctx = whisper_init_from_file(path)
+        status = "KROKO IT • INITIALIZING"
+
+        queue.async { [weak self, worker] in
+            worker.load(
+                encoder: encoder,
+                decoder: decoder,
+                joiner: joiner,
+                tokens: tokens
+            )
+
             DispatchQueue.main.async {
-                self.context = ctx
-                self.modelReady = ctx != nil
-                self.status = ctx == nil ? "WHISPER MODEL LOAD FAILED" : "WHISPER ITALIAN • READY"
+                guard let self else { return }
+                self.modelReady = worker.recognizer != nil
+                self.status = self.modelReady ? "KROKO IT • READY" : "KROKO IT • LOAD FAILED"
             }
         }
     }
