@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           MODEL_DIR="G2LAB/Resources/Models/KrokoIT"
-          BASE="https://huggingface.co/hudaiapa88/sherpa-stt-onnx/resolve/main/models/it/kroko_64l"
+          BASE="https://huggingface.co/hudaiapa88/sherpa-stt-onnx/resolve/24105aa0d6b3b80a82338b12445ed34886871093/it/kroko_64l"
           mkdir -p "$MODEL_DIR"
           curl -L --fail --retry 3 "$BASE/encoder.int8.onnx?download=true" -o "$MODEL_DIR/it_encoder.onnx"
           curl -L --fail --retry 3 "$BASE/decoder.int8.onnx?download=true" -o "$MODEL_DIR/it_decoder.onnx"
