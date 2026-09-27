@@ -67,15 +67,15 @@ jobs:
         run: |
           APP="build/DerivedData/Build/Products/Release-iphoneos/G2LAB.app"
           test -d "$APP"
-          rm -rf Payload G2_LAB_v0.4.1-b8-unsigned.ipa
+          rm -rf Payload G2_LAB_v0.4.2-b9-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry G2_LAB_v0.4.1-b8-unsigned.ipa Payload
+          /usr/bin/zip -qry G2_LAB_v0.4.2-b9-unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: G2_LAB_v0.4.1-b8_unsigned_IPA
-          path: G2_LAB_v0.4.1-b8-unsigned.ipa
+          path: G2_LAB_v0.4.2-b9-unsigned.ipa
           retention-days: 7
       - name: Upload build log on failure
         if: failure()
