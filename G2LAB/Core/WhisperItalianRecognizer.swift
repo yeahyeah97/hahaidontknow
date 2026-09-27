@@ -140,12 +140,12 @@ final class StreamingItalianRecognizer: ObservableObject {
         }
 
         queue.async { [weak self, worker] in
-            guard let result = worker.process(samples) else { return }
+            let result = worker.process(samples)
 
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pendingPackets -= 1
-                guard self.isRunning, self.generation == session else { return }
+                guard self.isRunning, self.generation == session, let result else { return }
                 self.lastInferenceMs = result.decodeMs
                 self.status = String(format: "KROKO IT • %.0f ms", result.decodeMs)
 

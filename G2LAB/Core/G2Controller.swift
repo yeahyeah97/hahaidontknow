@@ -57,6 +57,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     private var reconnectTask: Task<Void, Never>?
     private var captionHoldTask: Task<Void, Never>?
+    private var pendingHUDTask: Task<Void, Never>?
     private var hasConnectedOnce = false
     private var lastHudPush = Date.distantPast
     private var committedCaptionText = ""
@@ -257,6 +258,9 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     private func stopAudioSession() {
         direct?.setMicEnabled(false)
+        pendingHUDTask?.cancel()
+        pendingHUDTask = nil
+        direct?.cancelCaptionUpdates()
         let wasCaptioning = captionsEnabled
         captionsEnabled = false
         micEnabled = false
@@ -265,7 +269,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         asrLive = false
         lc3 = nil
         micLevel = 0
-        if wasCaptioning { italian.stop(); italian.resetSession() }
+        if wasCaptioning { italian.stop() }
         captionHoldTask?.cancel()
         captionHoldTask = nil
         captionStatus = "ITALIAN OFFLINE • IDLE"
@@ -423,11 +427,22 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
         let now = Date()
         if !force && now.timeIntervalSince(lastHudPush) < 0.12 {
+            pendingHUDTask?.cancel()
+            let delay = 0.12 - now.timeIntervalSince(lastHudPush)
+            pendingHUDTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.pushCaptionToHUD(text, force: true)
+            }
             return
         }
+        pendingHUDTask?.cancel()
+        pendingHUDTask = nil
         lastHudPush = now
 
-        let visible = String(text.suffix(220))
+        var visible = String(text.suffix(220))
+        // Leave room for protobuf/page wrapping inside the existing 253-byte payload.
+        while visible.utf8.count > 190 { visible.removeFirst() }
         lastRenderedCaption = visible
         sendCaptionHUD(visible)
         restartCaptionHoldTimer()

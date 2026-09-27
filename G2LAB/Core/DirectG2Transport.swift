@@ -125,6 +125,15 @@ final class DirectG2Transport: NSObject {
         }
     }
 
+    func cancelCaptionUpdates() {
+        if captionInitializing || captionDisplayReady {
+            hudGeneration += 1
+            captionInitializing = false
+            captionDisplayReady = false
+            pendingCaption = nil
+        }
+    }
+
     private func flushCaption() {
         guard let text = pendingCaption else { return }
         pendingCaption = nil
