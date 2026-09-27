@@ -9,6 +9,10 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var micLevel: Double = 0
     @Published var micPacketCount: Int = 0
     @Published var micEnabled = false
+    @Published var micActive = false
+    @Published var pcmActive = false
+    @Published var asrLive = false
+    private var lc3: G2LC3Decoder?
     @Published var batteryLevel: Int? = nil
     @Published var batteryCharging = false
     @Published var signalDbm: Int? = nil
@@ -29,7 +33,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     private lazy var italian: StreamingItalianRecognizer = {
         let recognizer = StreamingItalianRecognizer()
         recognizer.onText = { [weak self] text, isFinal in
-            guard let self else { return }
+            guard let self, self.captionsEnabled else { return }
+            self.asrLive = true
 
             if isFinal {
                 self.commitFinalCaption(text)
@@ -73,7 +78,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     override init() {
         super.init()
         // Important: launch does not construct Mentra, Sherpa/ONNX, or CoreBluetooth.
-        log("G2 LAB v0.3.1 build 5 — cold launch safe")
+        log("G2 LAB v0.4.0 build 7 — cold launch safe")
     }
 
 
@@ -114,19 +119,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         }
 
         transport.onMicPacket = { [weak self] data in
-            Task { @MainActor in
-                guard let self else { return }
-                self.micPacketCount += 1
-                if data.count > 200 {
-                    self.micLevel = min(1.0, Double(data[200]) / 80.0)
-                }
-                if self.micPacketCount == 1 || self.micPacketCount % 20 == 0 {
-                    self.log("DIRECT MIC: 6402 LC3 packet #\(self.micPacketCount) size=\(data.count)")
-                }
-                if self.captionsEnabled {
-                    self.captionStatus = "DIRECT G2 MIC • LC3 \(self.micPacketCount)"
-                }
-            }
+            // CoreBluetooth uses the main queue; process the 50-ms packet immediately.
+            MainActor.assumeIsolated { self?.acceptMicPacket(data) }
+        }
+        transport.onMicUnavailable = { [weak self] in
+            MainActor.assumeIsolated { self?.stopAudioSession() }
         }
 
         transport.onProtocolReady = { [weak self] in
@@ -165,7 +162,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func appDidEnterBackground() {
-        log("APP: BACKGROUND — CoreBluetooth link remains armed")
+        stopAudioSession()
+        log("APP: BACKGROUND — foreground caption session stopped")
     }
 
     func appWillResignActive() {
@@ -195,6 +193,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func disconnect() {
+        stopAudioSession()
         reconnectTask?.cancel()
         reconnectTask = nil
         hasConnectedOnce = false
@@ -227,26 +226,67 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func toggleCaptions() {
-        if captionsEnabled {
-            captionsEnabled = false
-            italian.stop()
-            captionHoldTask?.cancel()
-            captionHoldTask = nil
-            captionStatus = "ITALIAN OFFLINE • IDLE"
-            log("Italian offline captions OFF")
+        if captionsEnabled { stopAudioSession(); return }
+        guard linkReady, direct?.micAvailable == true else {
+            captionStatus = "DIRECT G2 + LEFT AUDIO NOTIFY REQUIRED"
             return
         }
+        guard prepareAudioSession() else { return }
+        captionsEnabled = true
+        currentPartialText = ""
+        italian.resetSession()
+        italian.start()
+        captionStatus = "WAITING FOR G2 AUDIO"
+        direct?.setMicEnabled(true)
+    }
 
-        guard linkReady else {
-            captionStatus = "DIRECT G2 LINK REQUIRED"
-            log("CAPTIONS BLOCKED: direct G2 protocol is not verified")
-            return
+    private func prepareAudioSession() -> Bool {
+        guard let decoder = G2LC3Decoder() else {
+            captionStatus = "LC3 INITIALIZATION FAILED"
+            return false
         }
+        lc3 = decoder
+        micEnabled = true
+        micActive = false
+        pcmActive = false
+        asrLive = false
+        micPacketCount = 0
+        micLevel = 0
+        return true
+    }
 
-        // Do not start ASR on silence and pretend it is working. The real G2
-        // audio transport is still being reverse-engineered.
-        captionStatus = "G2 MIC TRANSPORT NOT YET REVERSED"
-        log("CAPTIONS BLOCKED: 6402 is display, not microphone; waiting for real G2 audio transport")
+    private func stopAudioSession() {
+        direct?.setMicEnabled(false)
+        let wasCaptioning = captionsEnabled
+        captionsEnabled = false
+        micEnabled = false
+        micActive = false
+        pcmActive = false
+        asrLive = false
+        lc3 = nil
+        micLevel = 0
+        if wasCaptioning { italian.stop(); italian.resetSession() }
+        captionHoldTask?.cancel()
+        captionHoldTask = nil
+        captionStatus = "ITALIAN OFFLINE • IDLE"
+    }
+
+    private func acceptMicPacket(_ data: Data) {
+        guard micEnabled, let decoder = lc3 else { return }
+        if data.count == 205 { micActive = true }
+        let pcm = decoder.decode(data)
+        micPacketCount = decoder.packets
+        pcmActive = decoder.decodedFrames > 0
+        if let pcm {
+            micLevel = min(1, decoder.rms * 4)
+            if captionsEnabled {
+                italian.appendPCM16(pcm)
+                if !asrLive { captionStatus = "PCM ACTIVE • " + italian.status }
+            }
+        }
+        if decoder.packets == 1 || decoder.packets % 20 == 0 {
+            log("MIC packets=\(decoder.packets) size=\(data.count) seq=\(decoder.sequence.map(String.init) ?? "-") missing=\(decoder.missing) duplicates=\(decoder.duplicates) malformed=\(decoder.malformed) frames=\(decoder.decodedFrames) samples=\(decoder.sampleCount) rms=\(decoder.rms)")
+        }
     }
 
     func openMenu() {
@@ -268,13 +308,9 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     private func setMic(_ enabled: Bool) {
-        micEnabled = enabled
-        if let direct {
-            direct.setMicEnabled(enabled)
-            log("DIRECT G2 microphone \(enabled ? "ON" : "OFF")")
-        } else {
-            log("DIRECT MIC: tap Scan first")
-        }
+        if !enabled { stopAudioSession(); return }
+        guard linkReady, direct?.micAvailable == true, prepareAudioSession() else { return }
+        direct?.setMicEnabled(true)
     }
 
     private func handleGesture(_ name: String, source: Any?) {
@@ -404,7 +440,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             log("DIRECT CAPTION HUD BLOCKED: protocol not ready")
             return
         }
-        direct.showText(visible, final: false)
+        direct.showCaption(visible)
     }
 
     private func restartCaptionHoldTimer() {
@@ -502,38 +538,15 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             handleGesture(touch.gestureName ?? "unknown", source: touch.values["source"])
 
         default:
-            log("EVENT: \(String(describing: event))")
+            break
         }
     }
 
     func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didReceiveMicPcm event: MicPcmEvent) {
-        let data = event.pcm
-        guard data.count >= 2 else { return }
-
-        var sum = 0.0
-        var n = 0
-        data.withUnsafeBytes { raw in
-            let b = raw.bindMemory(to: UInt8.self)
-            var i = 0
-            while i + 1 < b.count {
-                let u = UInt16(b[i]) | (UInt16(b[i + 1]) << 8)
-                let s = Double(Int16(bitPattern: u)) / 32768.0
-                sum += s * s
-                n += 1
-                i += 2
-            }
-        }
-
-        if n > 0 {
-            micLevel = min(1, sqrt(sum / Double(n)) * 4)
-        }
-
-        if captionsEnabled {
-            italian.appendPCM16(data)
-        }
+        // Captions accept only decoded LEFT audio from the direct transport.
     }
 
     func mentraBluetoothSDK(_ sdk: MentraBluetoothSDK, didLog message: String) {
-        log("SDK: \(message)")
+        // SDK log payloads are not part of the metadata-only diagnostics contract.
     }
 }

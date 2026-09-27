@@ -33,10 +33,19 @@ final class DirectG2Transport: NSObject {
     private(set) var isProtocolReady = false
     private var wantsMic = false
     private var conversateStarted = false
+    private var hudGeneration = 0
+    private var captionDisplayReady = false
+    private var captionInitializing = false
+    private var pendingCaption: String?
 
     private static let commandWriteSuffix = "5401"
     private static let commandNotifySuffix = "5402"
-    private static let displayWriteSuffix = "6402"
+    private static let audioUUID = "00002760-08C2-11E1-9073-0E8AC72E6402"
+    private var micOpened = false
+    var onMicUnavailable: (() -> Void)?
+    var micAvailable: Bool {
+        lens(.left)?.micNotify?.isNotifying == true && lens(.right) != nil
+    }
 
     private var transportSeq: UInt8 = 0x08
     private var msgID: UInt8 = 0x14
@@ -65,6 +74,10 @@ final class DirectG2Transport: NSObject {
     }
 
     func stop() {
+        setMicEnabled(false)
+        hudGeneration += 1
+        captionDisplayReady = false
+        captionInitializing = false
         heartbeat?.invalidate()
         heartbeat = nil
         central?.stopScan()
@@ -96,12 +109,40 @@ final class DirectG2Transport: NSObject {
         sendTeleprompter(text)
     }
 
+    func showCaption(_ text: String) {
+        guard isProtocolReady else { return }
+        pendingCaption = text
+        if captionDisplayReady { flushCaption(); return }
+        guard !captionInitializing else { return }
+        sendTeleprompter(text)
+        captionInitializing = true
+        let generation = hudGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in
+            guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+            self.captionInitializing = false
+            self.captionDisplayReady = true
+            self.flushCaption()
+        }
+    }
+
+    private func flushCaption() {
+        guard let text = pendingCaption else { return }
+        pendingCaption = nil
+        sendContentPage(index: 0, text: Self.pageText(Self.wrap(text: text, width: 25, maxLines: 10)))
+        send(serviceHi: 0x80, serviceLo: 0x00,
+             payload: [0x08, 0x0E, 0x10, nextMsgID(), 0x6A, 0x00])
+    }
+
     func clearText() {
         guard isProtocolReady else { return }
         sendTeleprompter(" ")
     }
 
     private func sendTeleprompter(_ text: String) {
+        hudGeneration += 1
+        let generation = hudGeneration
+        captionDisplayReady = false
+        captionInitializing = false
         // Known-working clean-room teleprompter path:
         // 0E-20 display config -> 06-20 init -> 06-20 content pages -> 80-00 sync.
         let displayConfig = Self.hex(
@@ -136,20 +177,22 @@ final class DirectG2Transport: NSObject {
         send(serviceHi: 0x0E, serviceLo: 0x20, payload: cfgPayload)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
-            self?.send(serviceHi: 0x06, serviceLo: 0x20, payload: initPayload)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+            self.send(serviceHi: 0x06, serviceLo: 0x20, payload: initPayload)
         }
 
         var t = 0.80
         for i in 0..<10 {
             let page = pages[i]
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.sendContentPage(index: i, text: page)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+                self.sendContentPage(index: i, text: page)
             }
             t += 0.10
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-            guard let self else { return }
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
             self.send(serviceHi: 0x06, serviceLo: 0x20,
                       payload: [0x08,0xFF,0x01,0x10,self.nextMsgID(),0x6A,0x04,0x08,0x00,0x10,0x06])
         }
@@ -158,13 +201,14 @@ final class DirectG2Transport: NSObject {
         for i in 10..<12 {
             let page = pages[i]
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.sendContentPage(index: i, text: page)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+                self.sendContentPage(index: i, text: page)
             }
             t += 0.10
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-            guard let self else { return }
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
             self.send(serviceHi: 0x80, serviceLo: 0x00,
                       payload: [0x08,0x0E,0x10,self.nextMsgID(),0x6A,0x00])
         }
@@ -173,7 +217,8 @@ final class DirectG2Transport: NSObject {
         for i in 12..<14 {
             let page = pages[i]
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.sendContentPage(index: i, text: page)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+                self.sendContentPage(index: i, text: page)
             }
             t += 0.10
         }
@@ -340,13 +385,23 @@ final class DirectG2Transport: NSObject {
     }
 
     private func enableMicPath() {
-        // 6402 is a display/rendering WRITE characteristic, not a microphone stream.
-        // Keep this explicit until the real G2 audio transport is captured.
-        onLog?("DIRECT MIC: not implemented yet — 6402 is DISPLAY, not microphone")
+        guard wantsMic, !micOpened, isProtocolReady, micAvailable else { return }
+        micOpened = true
+        sendMicControl(status: 2)
+        onLog?("MIC OPEN: CTRL ENTER queued L+R; awaiting audio")
     }
 
     private func disableMicPath() {
-        onLog?("DIRECT MIC: OFF")
+        if micOpened { sendMicControl(status: 3) }
+        micOpened = false
+        onLog?("MIC CLOSE: CTRL EXIT queued L+R")
+    }
+
+    private func sendMicControl(status: UInt8) {
+        let payload: [UInt8] = [0x08, 0x01, 0x10, nextMsgID(), 0x1A, 0x02, 0x08, status]
+        for side in [Side.left, .right] {
+            send(to: side, serviceHi: 0x07, serviceLo: 0x20, payload: payload)
+        }
     }
 
     private func startHeartbeat() {
@@ -566,13 +621,18 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         error: Error?
     ) {
         guard let lens = lenses[peripheral.identifier] else { return }
+        setMicEnabled(false)
+        onMicUnavailable?()
+        hudGeneration += 1
+        captionDisplayReady = false
+        captionInitializing = false
         lens.commandReady = false
         lens.commandWrite = nil
         lens.commandNotify = nil
         lens.micNotify = nil
         publishReady()
 
-        if lens.side == .left {
+        if lens.side == .right {
             protocolStarted = false
             isProtocolReady = false
             conversateStarted = false
@@ -632,8 +692,9 @@ extension DirectG2Transport: CBPeripheralDelegate {
                 lens.commandNotify = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
                 onLog?("DIRECT: \(lens.side.rawValue) found 5402")
-            } else if uuid.hasSuffix(Self.displayWriteSuffix) {
-                onLog?("DIRECT: \(lens.side.rawValue) found 6402 DISPLAY")
+            } else if uuid == Self.audioUUID, lens.side == .left {
+                lens.micNotify = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
             }
         }
 
@@ -649,6 +710,17 @@ extension DirectG2Transport: CBPeripheralDelegate {
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        if characteristic.uuid.uuidString.uppercased() == Self.audioUUID {
+            guard lenses[peripheral.identifier]?.side == .left else { return }
+            if error == nil && characteristic.isNotifying {
+                onLog?("6402 LEFT NOTIFY ON")
+                enableMicPath()
+            } else {
+                setMicEnabled(false)
+                onMicUnavailable?()
+            }
+            return
+        }
         let suffix = String(characteristic.uuid.uuidString.suffix(4)).uppercased()
         if let error {
             onLog?("DIRECT: notify \(suffix) failed \(error.localizedDescription)")
@@ -666,6 +738,11 @@ extension DirectG2Transport: CBPeripheralDelegate {
               let lens = lenses[peripheral.identifier] else { return }
 
         let uuid = characteristic.uuid.uuidString.uppercased()
+        // Audio is fenced off before any generic notification/logging path.
+        if uuid == Self.audioUUID {
+            if lens.side == .left && wantsMic && micOpened { onMicPacket?(data) }
+            return
+        }
         if uuid.hasSuffix(Self.commandNotifySuffix) {
             onPacket?(lens.side, data)
 

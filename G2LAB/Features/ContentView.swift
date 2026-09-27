@@ -52,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.3.2 b6")
+                Text("ACCESSIBILITY ENGINE  •  v0.4.0 b7")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -113,7 +113,7 @@ struct ContentView: View {
             if g2.linkReady {
                 HStack(spacing: 10) {
                     statusPill(icon: "wave.3.right", title: "BLE", value: signalText)
-                    statusPill(icon: "mic.fill", title: "MIC", value: g2.micEnabled ? "ON" : "OFF")
+                    statusPill(icon: "mic.fill", title: "MIC", value: g2.micActive ? "ACTIVE" : (g2.micEnabled ? "WAITING" : "OFF"))
                     statusPill(icon: "captions.bubble.fill", title: "ASR", value: g2.captionsEnabled ? "LIVE" : "OFF")
                 }
             } else {
@@ -154,6 +154,8 @@ struct ContentView: View {
                 Label("LIVE CAPTIONS", systemImage: "captions.bubble.fill")
                     .font(.headline)
                 Spacer()
+                Text("MIC \(g2.micActive ? "ACTIVE" : "—") • PCM \(g2.pcmActive ? "ACTIVE" : "—") • ASR \(g2.asrLive ? "LIVE" : "—")")
+                    .font(.caption2)
                 Text(g2.captionStatus)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)

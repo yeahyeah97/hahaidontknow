@@ -59,6 +59,7 @@ private final class KrokoASRWorker {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         let endpoint = recognizer.isEndpoint()
+        if endpoint { recognizer.reset() }
         let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
         return (text, endpoint, elapsed)
     }
@@ -81,6 +82,9 @@ final class StreamingItalianRecognizer: ObservableObject {
     private let worker = KrokoASRWorker()
     private var lastEmittedText = ""
     private var loadStarted = false
+    private var generation = 0
+    private var pendingPackets = 0
+    @Published private(set) var droppedPackets = 0
 
     init() {
         status = "KROKO IT • IDLE"
@@ -103,10 +107,12 @@ final class StreamingItalianRecognizer: ObservableObject {
 
     func stop() {
         isRunning = false
+        resetSession()
         status = modelReady ? "KROKO IT • READY" : "KROKO IT • MODEL ERROR"
     }
 
     func resetSession() {
+        generation += 1
         lastEmittedText = ""
         queue.async { [worker] in
             worker.reset()
@@ -115,6 +121,9 @@ final class StreamingItalianRecognizer: ObservableObject {
 
     func appendPCM16(_ data: Data) {
         guard isRunning, modelReady, data.count >= 2 else { return }
+        guard pendingPackets < 2 else { droppedPackets += 1; return }
+        let session = generation
+        pendingPackets += 1
 
         var samples = [Float]()
         samples.reserveCapacity(data.count / 2)
@@ -135,6 +144,8 @@ final class StreamingItalianRecognizer: ObservableObject {
 
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.pendingPackets -= 1
+                guard self.isRunning, self.generation == session else { return }
                 self.lastInferenceMs = result.decodeMs
                 self.status = String(format: "KROKO IT • %.0f ms", result.decodeMs)
 
@@ -143,9 +154,7 @@ final class StreamingItalianRecognizer: ObservableObject {
                         self.onText?(result.text, true)
                     }
                     self.lastEmittedText = ""
-                    self.queue.async { [worker] in
-                        worker.reset()
-                    }
+
                 } else if !result.text.isEmpty, result.text != self.lastEmittedText {
                     self.lastEmittedText = result.text
                     self.onText?(result.text, false)

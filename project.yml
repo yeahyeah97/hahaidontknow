@@ -14,16 +14,23 @@ targets:
   G2LAB:
     type: application
     platform: iOS
-    sources: [G2LAB]
+    sources:
+      - G2LAB
+      - path: ThirdParty/liblc3/src
+        includes: ["*.c", "*.h"]
     resources:
       - G2LAB/Resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.app
-        MARKETING_VERSION: 0.3.2
-        CURRENT_PROJECT_VERSION: 6
+        MARKETING_VERSION: 0.4.0
+        CURRENT_PROJECT_VERSION: 7
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: 5.9
+        SWIFT_OBJC_BRIDGING_HEADER: G2LAB/G2LAB-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/ThirdParty/liblc3/include"
+          - "$(SRCROOT)/ThirdParty/liblc3/src"
         TARGETED_DEVICE_FAMILY: '1'
         CODE_SIGN_STYLE: Manual
         CODE_SIGNING_ALLOWED: NO
