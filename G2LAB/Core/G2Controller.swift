@@ -3,7 +3,7 @@ import MentraBluetoothSDK
 
 @MainActor
 final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate {
-    @Published var status = "READY"
+    @Published var status = "IDLE"
     @Published var devices: [Device] = []
     @Published var logs: [String] = []
     @Published var micLevel: Double = 0
@@ -59,7 +59,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     private var lastRenderedCaption = ""
 
     var linkReady: Bool {
-        status == "CONNECTED" || status.contains("READY")
+        direct?.isProtocolReady == true
     }
 
     private let menuItems = [
@@ -97,7 +97,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
                 self.directRightReady = right
                 self.log("DIRECT: L=\(left ? "READY" : "—") R=\(right ? "READY" : "—")")
                 if left || right {
-                    self.status = left && right ? "DIRECT L+R READY" : "DIRECT PARTIAL"
+                    self.status = left && right ? "DIRECT GATT L+R" : "DIRECT GATT PARTIAL"
                 }
             }
         }
@@ -151,7 +151,17 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     func appDidBecomeActive() {
         log("APP: ACTIVE")
-        if direct != nil { direct?.start() }
+        startLink()
+    }
+
+    func startLink() {
+        if direct == nil {
+            status = "DIRECT STARTING"
+            log("DIRECT: auto-start requested")
+            startDirectTransportIfNeeded()
+        } else {
+            direct?.start()
+        }
     }
 
     func appDidEnterBackground() {
@@ -195,37 +205,21 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func showProof() {
-        if let direct, direct.isProtocolReady {
-            direct.showText("G2 LAB // DIRECT LINK ACTIVE")
-            log("DIRECT HUD proof sent")
+        guard let direct, direct.isProtocolReady else {
+            log("DIRECT HUD TEST BLOCKED: no verified G2 link")
             return
         }
-
-        Task {
-            do {
-                try await sdk.displayText("G2 LAB // FALLBACK LINK", x: 0, y: 0, size: 24)
-                log("Fallback HUD proof sent")
-            } catch {
-                log("HUD ERROR: \(error.localizedDescription)")
-            }
-        }
+        direct.showText("G2 LAB\nDIRECT LINK ACTIVE")
+        log("DIRECT HUD proof queued")
     }
 
     func clearHUD() {
-        if let direct, direct.isProtocolReady {
-            direct.clearText()
-            log("DIRECT HUD cleared")
+        guard let direct, direct.isProtocolReady else {
+            log("DIRECT CLEAR BLOCKED: no verified G2 link")
             return
         }
-
-        Task {
-            do {
-                try await sdk.clearDisplay()
-                log("Fallback display cleared")
-            } catch {
-                log("CLEAR ERROR: \(error.localizedDescription)")
-            }
-        }
+        direct.clearText()
+        log("DIRECT HUD clear queued")
     }
 
     func toggleMic() {
@@ -233,29 +227,38 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func toggleCaptions() {
-        captionsEnabled.toggle()
-
         if captionsEnabled {
-            if !micEnabled {
-                setMic(true)
-            }
-            italian.start()
-            captionStatus = "ITALIAN OFFLINE • STARTING"
-            log("Italian offline captions ON")
-        } else {
+            captionsEnabled = false
             italian.stop()
             captionHoldTask?.cancel()
             captionHoldTask = nil
             captionStatus = "ITALIAN OFFLINE • IDLE"
             log("Italian offline captions OFF")
+            return
         }
+
+        guard linkReady else {
+            captionStatus = "DIRECT G2 LINK REQUIRED"
+            log("CAPTIONS BLOCKED: direct G2 protocol is not verified")
+            return
+        }
+
+        // Do not start ASR on silence and pretend it is working. The real G2
+        // audio transport is still being reverse-engineered.
+        captionStatus = "G2 MIC TRANSPORT NOT YET REVERSED"
+        log("CAPTIONS BLOCKED: 6402 is display, not microphone; waiting for real G2 audio transport")
     }
 
     func openMenu() {
+        guard linkReady else {
+            menuVisible = false
+            log("DIRECT MENU BLOCKED: no verified RIGHT-lens 5402 response")
+            return
+        }
         menuVisible = true
         menuSelection = 0
         renderMenu()
-        log("G2 LAB menu OPEN")
+        log("DIRECT G2 menu queued")
     }
 
     func closeMenu() {
@@ -336,34 +339,20 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
         let footer = captionsEnabled ? "\n\nCAPTIONS: ON" : "\n\nCAPTIONS: OFF"
 
-        if let direct, direct.isProtocolReady {
-            direct.showText("G2 LAB\n\n\(rows)\(footer)")
+        guard let direct, direct.isProtocolReady else {
+            log("DIRECT MENU RENDER BLOCKED: protocol not ready")
             return
         }
-
-        Task {
-            do {
-                try await sdk.displayText("G2 LAB\n\n\(rows)\(footer)", x: 0, y: 0, size: 18)
-            } catch {
-                log("MENU HUD ERROR: \(error.localizedDescription)")
-            }
-        }
+        direct.showText("G2 LAB\n\n\(rows)\(footer)")
     }
 
     private func showConnectionStatus() {
         let text = "G2 LAB STATUS\n\n\(status)\nMIC: \(micEnabled ? "ON" : "OFF")\nCAPTIONS: \(captionsEnabled ? "ON" : "OFF")"
-        if let direct, direct.isProtocolReady {
-            direct.showText(text)
+        guard let direct, direct.isProtocolReady else {
+            log("DIRECT STATUS HUD BLOCKED: protocol not ready")
             return
         }
-
-        Task {
-            do {
-                try await sdk.displayText(text, x: 0, y: 0, size: 18)
-            } catch {
-                log("STATUS HUD ERROR: \(error.localizedDescription)")
-            }
-        }
+        direct.showText(text)
     }
 
     private func commitFinalCaption(_ text: String) {
@@ -411,18 +400,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     private func sendCaptionHUD(_ visible: String) {
         guard captionsEnabled, !menuVisible, !visible.isEmpty else { return }
 
-        if let direct, direct.isProtocolReady {
-            direct.showText(visible, final: false)
+        guard let direct, direct.isProtocolReady else {
+            log("DIRECT CAPTION HUD BLOCKED: protocol not ready")
             return
         }
-
-        Task {
-            do {
-                try await sdk.displayText(visible, x: 0, y: 0, size: 22)
-            } catch {
-                log("CAPTION HUD ERROR: \(error.localizedDescription)")
-            }
-        }
+        direct.showText(visible, final: false)
     }
 
     private func restartCaptionHoldTimer() {
