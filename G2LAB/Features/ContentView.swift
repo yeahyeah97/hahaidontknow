@@ -51,7 +51,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.2")
+                Text("ACCESSIBILITY ENGINE  •  v0.2.1")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -186,7 +186,7 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
 
-            Text("Offline engine: LocalAI Italian Whisper Small • Q5_0 • rolling partial updates")
+            Text("Offline engine: Kroko Italian Streaming Zipformer • sherpa-onnx • true partial streaming")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -236,9 +236,9 @@ struct ContentView: View {
             permissionRow("Microphone", value: permissions.microphone, icon: "mic.fill")
             permissionRow("Speech fallback", value: permissions.speech, icon: "waveform")
             permissionRow("Notifications", value: permissions.notifications, icon: "bell.fill")
-            permissionRow("Background BLE", value: "ENABLED IN APP", icon: "arrow.triangle.2.circlepath")
+            permissionRow("Background BLE + Refresh", value: "ENABLED", icon: "arrow.triangle.2.circlepath")
 
-            Text("iOS does not provide a separate permission prompt for Background App Refresh or cellular data. Bluetooth background operation is declared by the app itself.")
+            Text("Background App Refresh is now declared together with Bluetooth background mode. Enable “Aggiornamento app in background” for G2 LAB in iOS Settings when the switch appears.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
