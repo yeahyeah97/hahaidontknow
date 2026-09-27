@@ -30,11 +30,35 @@ struct ContentView: View {
                             Button(g2.micEnabled ? "STOP MIC" : "START MIC") { g2.toggleMic() }.buttonStyle(.borderedProminent)
                         }
                     }
-                    GroupBox("NEXT ENGINE") {
+                    GroupBox("ITALIAN OFFLINE CAPTIONS") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Button(g2.captionsEnabled ? "STOP CAPTIONS" : "START CAPTIONS") {
+                                    g2.toggleCaptions()
+                                }
+                                .buttonStyle(.borderedProminent)
+
+                                Text(g2.captionStatus)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Text(g2.captionText.isEmpty ? "Waiting for Italian speech…" : g2.captionText)
+                                .font(.body)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Text("Glasses controls: DOUBLE TAP opens/activates • SWIPE UP/DOWN moves • SINGLE TAP closes")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    GroupBox("BACKGROUND LINK") {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("🇮🇹 Offline Italian captions")
-                            Text("Rolling transcript • instant replay • sound awareness • translation • AI transcript actions")
-                                .font(.caption).foregroundStyle(.secondary)
+                            Text("Bluetooth background mode + saved default G2 + automatic reconnect")
+                            Text("Designed to stay linked when the app is backgrounded or the phone is locked. iOS can still interrupt Bluetooth after force-quit/system-level changes.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("DIAGNOSTIC CONSOLE") {
