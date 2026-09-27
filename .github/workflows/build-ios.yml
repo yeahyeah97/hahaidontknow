@@ -74,7 +74,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: G2_LAB_v0.4.1-b8_unsigned_IPA
+          name: G2_LAB_v0.4.3-b10_unsigned_IPA
           path: G2_LAB_v0.4.3-b10-unsigned.ipa
           retention-days: 7
       - name: Upload build log on failure
