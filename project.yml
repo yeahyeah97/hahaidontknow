@@ -26,7 +26,8 @@ targets:
         INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: G2 LAB connects to Even Realities G2 over Bluetooth.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: G2 LAB uses microphone audio for captions and accessibility features when enabled.
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: G2 LAB uses on-device speech recognition for offline captions.
-        INFOPLIST_KEY_UIBackgroundModes: bluetooth-central
+        INFOPLIST_KEY_UIBackgroundModes:
+          - bluetooth-central
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     dependencies:
       - package: MentraBluetoothSDK
