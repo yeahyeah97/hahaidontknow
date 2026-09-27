@@ -20,7 +20,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var captionStatus = "ITALIAN OFFLINE • IDLE"
 
     private let sdk = MentraBluetoothSDK(configuration: .default)
-    private let italian = WhisperItalianRecognizer()
+    private let italian = StreamingItalianRecognizer()
 
     private var reconnectTask: Task<Void, Never>?
     private var captionHoldTask: Task<Void, Never>?
