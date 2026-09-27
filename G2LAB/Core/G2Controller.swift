@@ -17,6 +17,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var audio205Count = 0
     @Published var audioInvalidCount = 0
     @Published var micControlState = "IDLE"
+    @Published var gestureProbeCount = 0
     private var lc3: G2LC3Decoder?
     @Published var batteryLevel: Int? = nil
     @Published var batteryCharging = false
@@ -84,7 +85,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     override init() {
         super.init()
         // Important: launch does not construct Mentra, Sherpa/ONNX, or CoreBluetooth.
-        log("G2 LAB v0.4.1 build 8 — cold launch safe")
+        log("G2 LAB v0.4.2 build 9 — cold launch safe")
     }
 
 
@@ -124,6 +125,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             Task { @MainActor in
                 guard let self else { return }
                 self.log("DIRECT RX \(side.rawValue) svc=\(svc) msg=\(message) size=\(data.count)")
+                // Gesture decoder is intentionally not guessed yet. Preserve compact
+                // command/event metadata so physical tap/swipe tests can be mapped.
+                if svc != "80-00" && svc != "E0-20" && svc != "07-00" && svc != "07-20" {
+                    self.gestureProbeCount += 1
+                }
             }
         }
 
@@ -333,7 +339,7 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         }
         if decoder.packets == 1 || decoder.packets % 20 == 0 {
             let asrDrops = captionsEnabled ? italian.droppedPackets : 0
-            log("MIC packets=\(decoder.packets) size=\(data.count) seq=\(decoder.sequence.map(String.init) ?? "-") missing=\(decoder.missing) duplicates=\(decoder.duplicates) malformed=\(decoder.malformed) frames=\(decoder.decodedFrames) samples=\(decoder.sampleCount) errors=\(decoder.decodeErrors) asrDrops=\(asrDrops) rms=\(decoder.rms)")
+            log("MIC packets=\(decoder.packets) size=\(data.count) seq=\(decoder.sequence.map(String.init) ?? "-") missing=\(decoder.missing) duplicates=\(decoder.duplicates) malformed=\(decoder.malformed) frames=\(decoder.decodedFrames) samples=\(decoder.sampleCount) errors=\(decoder.decodeErrors) asrIn=\(italian.pcmBuffersIn) asrProcessed=\(italian.processedChunks) partials=\(italian.partialCount) asrDrops=\(asrDrops) rms=\(decoder.rms)")
         }
     }
 
