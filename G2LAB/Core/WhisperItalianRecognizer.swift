@@ -80,18 +80,25 @@ final class StreamingItalianRecognizer: ObservableObject {
     private let queue = DispatchQueue(label: "com.g2lab.kroko.streaming", qos: .userInitiated)
     private let worker = KrokoASRWorker()
     private var lastEmittedText = ""
+    private var loadStarted = false
 
     init() {
-        loadModel()
+        status = "KROKO IT • IDLE"
     }
 
     func start() {
-        guard modelReady else {
-            status = "KROKO IT • MODEL NOT READY"
+        isRunning = true
+
+        if modelReady {
+            status = "KROKO IT • STREAMING"
             return
         }
-        isRunning = true
-        status = "KROKO IT • STREAMING"
+
+        status = "KROKO IT • LOADING"
+        if !loadStarted {
+            loadStarted = true
+            loadModel()
+        }
     }
 
     func stop() {
@@ -179,7 +186,11 @@ final class StreamingItalianRecognizer: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.modelReady = worker.recognizer != nil
-                self.status = self.modelReady ? "KROKO IT • READY" : "KROKO IT • LOAD FAILED"
+                if self.modelReady {
+                    self.status = self.isRunning ? "KROKO IT • STREAMING" : "KROKO IT • READY"
+                } else {
+                    self.status = "KROKO IT • LOAD FAILED"
+                }
             }
         }
     }

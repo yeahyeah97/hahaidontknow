@@ -51,7 +51,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 LAB")
                     .font(.system(size: 26, weight: .black, design: .rounded))
-                Text("ACCESSIBILITY ENGINE  •  v0.2.1")
+                Text("ACCESSIBILITY ENGINE  •  v0.3.1 b5")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -59,7 +59,7 @@ struct ContentView: View {
             Spacer()
 
             Circle()
-                .fill(g2.status == "CONNECTED" ? Color.green : Color.orange)
+                .fill(g2.linkReady ? Color.green : Color.orange)
                 .frame(width: 9, height: 9)
         }
     }
@@ -72,7 +72,7 @@ struct ContentView: View {
                         .font(.headline)
                     Text(g2.status)
                         .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(g2.status == "CONNECTED" ? .green : .secondary)
+                        .foregroundStyle(g2.linkReady ? .green : .secondary)
                 }
 
                 Spacer()
@@ -109,7 +109,7 @@ struct ContentView: View {
                     )
             }
 
-            if g2.status == "CONNECTED" {
+            if g2.linkReady {
                 HStack(spacing: 10) {
                     statusPill(icon: "wave.3.right", title: "BLE", value: signalText)
                     statusPill(icon: "mic.fill", title: "MIC", value: g2.micEnabled ? "ON" : "OFF")
@@ -186,7 +186,7 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
             }
 
-            Text("Offline engine: Kroko Italian Streaming Zipformer • sherpa-onnx • true partial streaming")
+            Text("Direct G2 mic: UUID 6402 raw LC3 • 16 kHz mono path • Kroko loads only when captions start")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -236,9 +236,9 @@ struct ContentView: View {
             permissionRow("Microphone", value: permissions.microphone, icon: "mic.fill")
             permissionRow("Speech fallback", value: permissions.speech, icon: "waveform")
             permissionRow("Notifications", value: permissions.notifications, icon: "bell.fill")
-            permissionRow("Background BLE + Refresh", value: "ENABLED", icon: "arrow.triangle.2.circlepath")
+            permissionRow("Background BLE", value: "DECLARED", icon: "arrow.triangle.2.circlepath")
 
-            Text("Background App Refresh is now declared together with Bluetooth background mode. Enable “Aggiornamento app in background” for G2 LAB in iOS Settings when the switch appears.")
+            Text("CoreBluetooth background-central is declared. iOS controls Background App Refresh separately; this build no longer claims the toggle is enabled when Settings does not expose it.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -252,9 +252,9 @@ struct ContentView: View {
                 .font(.headline)
 
             HStack {
-                metric("PCM", String(format: "%.3f", g2.micLevel))
-                metric("BLE", signalText)
-                metric("HUD", g2.status == "CONNECTED" ? "READY" : "OFF")
+                metric("LC3", "\(g2.micPacketCount)")
+                metric("LEVEL", String(format: "%.3f", g2.micLevel))
+                metric("HUD", g2.linkReady ? "READY" : "OFF")
             }
 
             Text("Battery/latency mode: coalesced HUD writes, one PCM stream, ASR only while captions are enabled, reconnect backoff enabled.")

@@ -19,33 +19,15 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     @Published var captionText = ""
     @Published var captionStatus = "ITALIAN OFFLINE • IDLE"
 
-    private let sdk = MentraBluetoothSDK(configuration: .default)
-    private let italian = StreamingItalianRecognizer()
-    private var direct: DirectG2Transport?
-    private var directLeftReady = false
-    private var directRightReady = false
+    private lazy var sdk: MentraBluetoothSDK = {
+        let value = MentraBluetoothSDK(configuration: .default)
+        value.delegate = self
+        return value
+    }()
 
-    private var reconnectTask: Task<Void, Never>?
-    private var captionHoldTask: Task<Void, Never>?
-    private var hasConnectedOnce = false
-    private var lastHudPush = Date.distantPast
-    private var committedCaptionText = ""
-    private var currentPartialText = ""
-    private var lastRenderedCaption = ""
-
-    private let menuItems = [
-        "ITALIAN LIVE CAPTIONS",
-        "MIC TOGGLE",
-        "CLEAR HUD",
-        "CONNECTION STATUS",
-        "CLOSE MENU"
-    ]
-
-    override init() {
-        super.init()
-        sdk.delegate = self
-
-        italian.onText = { [weak self] text, isFinal in
+    private lazy var italian: StreamingItalianRecognizer = {
+        let recognizer = StreamingItalianRecognizer()
+        recognizer.onText = { [weak self] text, isFinal in
             guard let self else { return }
 
             if isFinal {
@@ -60,10 +42,38 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             self.captionStatus = isFinal ? "ITALIAN OFFLINE • FINAL" : "ITALIAN OFFLINE • LIVE"
             self.pushCaptionToHUD(combined, force: isFinal)
         }
+        return recognizer
+    }()
 
-        log("G2 LAB v0.3 boot — direct transport idle until Scan")
+    private var direct: DirectG2Transport?
+    private var directLeftReady = false
+    private var directRightReady = false
+
+    private var reconnectTask: Task<Void, Never>?
+    private var captionHoldTask: Task<Void, Never>?
+    private var hasConnectedOnce = false
+    private var lastHudPush = Date.distantPast
+    private var committedCaptionText = ""
+    private var currentPartialText = ""
+    private var lastRenderedCaption = ""
+
+    var linkReady: Bool {
+        status == "CONNECTED" || status.contains("READY")
     }
 
+    private let menuItems = [
+        "ITALIAN LIVE CAPTIONS",
+        "MIC TOGGLE",
+        "CLEAR HUD",
+        "CONNECTION STATUS",
+        "CLOSE MENU"
+    ]
+
+    override init() {
+        super.init()
+        // Important: launch does not construct Mentra, Sherpa/ONNX, or CoreBluetooth.
+        log("G2 LAB v0.3.1 build 5 — cold launch safe")
+    }
 
 
     private func startDirectTransportIfNeeded() {
@@ -95,7 +105,37 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             guard data.count >= 8 else { return }
             let svc = String(format: "%02X%02X", data[6], data[7])
             Task { @MainActor in
-                self?.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B")
+                guard let self else { return }
+                if self.logs.first?.contains("DIRECT RX") != true {
+                    self.log("DIRECT RX \(side.rawValue) svc=\(svc) \(data.count)B")
+                }
+            }
+        }
+
+        transport.onMicPacket = { [weak self] data in
+            Task { @MainActor in
+                guard let self else { return }
+                self.micPacketCount += 1
+                if data.count > 200 {
+                    self.micLevel = min(1.0, Double(data[200]) / 80.0)
+                }
+                if self.micPacketCount == 1 || self.micPacketCount % 20 == 0 {
+                    self.log("DIRECT MIC: 6402 LC3 packet #\(self.micPacketCount) size=\(data.count)")
+                }
+                if self.captionsEnabled {
+                    self.captionStatus = "DIRECT G2 MIC • LC3 \(self.micPacketCount)"
+                }
+            }
+        }
+
+        transport.onProtocolReady = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.status = "DIRECT G2 READY"
+                self.log("DIRECT: protocol init complete")
+                if self.micEnabled {
+                    self.direct?.setMicEnabled(true)
+                }
             }
         }
 
@@ -105,34 +145,16 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     func backgroundRefreshPulse() {
         log("APP: BACKGROUND REFRESH")
-        guard status != "CONNECTED", hasConnectedOnce else { return }
-        do {
-            try sdk.connectDefault()
-            log("APP: background refresh reconnect requested")
-        } catch {
-            log("BACKGROUND REFRESH RECONNECT ERROR: \(error.localizedDescription)")
-            scheduleReconnect()
-        }
+        direct?.start()
     }
 
     func appDidBecomeActive() {
         log("APP: ACTIVE")
-        if status != "CONNECTED", hasConnectedOnce {
-            log("APP: foreground reconnect")
-            do {
-                try sdk.connectDefault()
-            } catch {
-                log("FOREGROUND RECONNECT ERROR: \(error.localizedDescription)")
-                scheduleReconnect()
-            }
-        }
+        if direct != nil { direct?.start() }
     }
 
     func appDidEnterBackground() {
-        log("APP: BACKGROUND")
-        if status != "CONNECTED", hasConnectedOnce {
-            scheduleReconnect()
-        }
+        log("APP: BACKGROUND — CoreBluetooth link remains armed")
     }
 
     func appWillResignActive() {
@@ -140,19 +162,12 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func scan() {
-        // Direct BLE is deliberately created only after the user taps Scan.
-        // This keeps launch completely free of the experimental transport and
-        // makes any CoreBluetooth failure observable instead of a launch crash.
-        startDirectTransportIfNeeded()
         devices.removeAll()
-        status = "SCANNING"
-        log("Scanning for Even Realities G2…")
-        do {
-            try sdk.startScan(model: .g2)
-        } catch {
-            status = "SCAN ERROR"
-            log("SCAN ERROR: \(error.localizedDescription)")
-        }
+        micPacketCount = 0
+        micLevel = 0
+        status = "DIRECT SCANNING"
+        log("DIRECT: scan requested — Mentra transport bypassed")
+        startDirectTransportIfNeeded()
     }
 
     func connect(_ device: Device) {
@@ -172,16 +187,23 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         reconnectTask?.cancel()
         reconnectTask = nil
         hasConnectedOnce = false
-        sdk.disconnect()
+        direct?.stop()
+        direct = nil
         status = "DISCONNECTED"
-        log("Disconnect requested")
+        log("DIRECT: disconnect requested")
     }
 
     func showProof() {
+        if let direct, direct.isProtocolReady {
+            direct.showText("G2 LAB // DIRECT LINK ACTIVE")
+            log("DIRECT HUD proof sent")
+            return
+        }
+
         Task {
             do {
-                try await sdk.displayText("G2 LAB // LINK ACTIVE", x: 0, y: 0, size: 24)
-                log("HUD proof sent")
+                try await sdk.displayText("G2 LAB // FALLBACK LINK", x: 0, y: 0, size: 24)
+                log("Fallback HUD proof sent")
             } catch {
                 log("HUD ERROR: \(error.localizedDescription)")
             }
@@ -189,10 +211,16 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     func clearHUD() {
+        if let direct, direct.isProtocolReady {
+            direct.clearText()
+            log("DIRECT HUD cleared")
+            return
+        }
+
         Task {
             do {
                 try await sdk.clearDisplay()
-                log("Display cleared")
+                log("Fallback display cleared")
             } catch {
                 log("CLEAR ERROR: \(error.localizedDescription)")
             }
@@ -237,9 +265,12 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
     private func setMic(_ enabled: Bool) {
         micEnabled = enabled
-        sdk.setPreferredMic(.auto)
-        sdk.setMicState(enabled: enabled, useGlassesMic: true)
-        log("G2 microphone \(enabled ? "ON" : "OFF")")
+        if let direct {
+            direct.setMicEnabled(enabled)
+            log("DIRECT G2 microphone \(enabled ? "ON" : "OFF")")
+        } else {
+            log("DIRECT MIC: tap Scan first")
+        }
     }
 
     private func handleGesture(_ name: String, source: Any?) {
@@ -304,6 +335,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
 
         let footer = captionsEnabled ? "\n\nCAPTIONS: ON" : "\n\nCAPTIONS: OFF"
 
+        if let direct, direct.isProtocolReady {
+            direct.showText("G2 LAB\n\n\(rows)\(footer)")
+            return
+        }
+
         Task {
             do {
                 try await sdk.displayText("G2 LAB\n\n\(rows)\(footer)", x: 0, y: 0, size: 18)
@@ -314,14 +350,15 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     }
 
     private func showConnectionStatus() {
+        let text = "G2 LAB STATUS\n\n\(status)\nMIC: \(micEnabled ? "ON" : "OFF")\nCAPTIONS: \(captionsEnabled ? "ON" : "OFF")"
+        if let direct, direct.isProtocolReady {
+            direct.showText(text)
+            return
+        }
+
         Task {
             do {
-                try await sdk.displayText(
-                    "G2 LAB STATUS\n\n\(status)\nMIC: \(micEnabled ? "ON" : "OFF")\nCAPTIONS: \(captionsEnabled ? "ON" : "OFF")",
-                    x: 0,
-                    y: 0,
-                    size: 18
-                )
+                try await sdk.displayText(text, x: 0, y: 0, size: 18)
             } catch {
                 log("STATUS HUD ERROR: \(error.localizedDescription)")
             }
@@ -373,6 +410,11 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
     private func sendCaptionHUD(_ visible: String) {
         guard captionsEnabled, !menuVisible, !visible.isEmpty else { return }
 
+        if let direct, direct.isProtocolReady {
+            direct.showText(visible, final: false)
+            return
+        }
+
         Task {
             do {
                 try await sdk.displayText(visible, x: 0, y: 0, size: 22)
@@ -410,12 +452,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
                 self.italian.resetSession()
             }
 
-            do {
-                try await self.sdk.clearDisplay()
-                self.log("Caption HUD idle clear after 5s — transcript retained")
-            } catch {
-                self.log("CAPTION CLEAR ERROR: \(error.localizedDescription)")
-            }
+            self.clearHUD()
+            self.log("Caption HUD idle clear after 5s — transcript retained")
         }
     }
 
