@@ -47,7 +47,7 @@ struct ContentView: View {
                                 .font(.body)
                                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                            Text("Glasses controls: DOUBLE TAP opens/activates • SWIPE UP/DOWN moves • SINGLE TAP closes")
+                            Text("Glasses controls: DOUBLE TAP opens/closes • SWIPE UP/DOWN moves • SINGLE TAP activates")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
