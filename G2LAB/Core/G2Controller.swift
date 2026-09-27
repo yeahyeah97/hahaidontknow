@@ -74,6 +74,16 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         direct?.isProtocolReady == true
     }
 
+    // Read-only ASR diagnostics for the SwiftUI diagnostics panel.
+    var italianModelState: String { italian.modelState }
+    var italianPCMIn: Int { italian.pcmBuffersIn }
+    var italianQueued: Int { italian.queuedChunks }
+    var italianProcessed: Int { italian.processedChunks }
+    var italianDropped: Int { italian.droppedPackets }
+    var italianPartials: Int { italian.partialCount }
+    var italianFinals: Int { italian.finalCount }
+    var italianInferenceMs: Double { italian.lastInferenceMs }
+
     private let menuItems = [
         "ITALIAN LIVE CAPTIONS",
         "MIC TOGGLE",
