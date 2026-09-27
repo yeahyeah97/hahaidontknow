@@ -154,13 +154,14 @@ struct ContentView: View {
                 Label("LIVE CAPTIONS", systemImage: "captions.bubble.fill")
                     .font(.headline)
                 Spacer()
-                Text("MIC \(g2.micActive ? "ACTIVE" : "—") • PCM \(g2.pcmActive ? "ACTIVE" : "—") • ASR \(g2.asrLive ? "LIVE" : "—")")
-                    .font(.caption2)
                 Text(g2.captionStatus)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
+            Text("MIC \(g2.micActive ? "ACTIVE" : "—") • PCM \(g2.pcmActive ? "ACTIVE" : "—") • ASR \(g2.asrLive ? "LIVE" : "—")")
+                .font(.caption2.monospaced())
 
             Text(g2.captionText.isEmpty ? "Parla in italiano… le caption appariranno qui e sul G2." : g2.captionText)
                 .font(.system(size: 18, weight: .medium, design: .rounded))

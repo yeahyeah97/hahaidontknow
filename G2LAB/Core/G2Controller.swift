@@ -269,7 +269,12 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
         asrLive = false
         lc3 = nil
         micLevel = 0
-        if wasCaptioning { italian.stop() }
+        if wasCaptioning {
+            commitFinalCaption(currentPartialText)
+            currentPartialText = ""
+            captionText = combinedCaptionText()
+            italian.stop()
+        }
         captionHoldTask?.cancel()
         captionHoldTask = nil
         captionStatus = "ITALIAN OFFLINE • IDLE"
@@ -289,7 +294,8 @@ final class G2Controller: NSObject, ObservableObject, MentraBluetoothSDKDelegate
             }
         }
         if decoder.packets == 1 || decoder.packets % 20 == 0 {
-            log("MIC packets=\(decoder.packets) size=\(data.count) seq=\(decoder.sequence.map(String.init) ?? "-") missing=\(decoder.missing) duplicates=\(decoder.duplicates) malformed=\(decoder.malformed) frames=\(decoder.decodedFrames) samples=\(decoder.sampleCount) rms=\(decoder.rms)")
+            let asrDrops = captionsEnabled ? italian.droppedPackets : 0
+            log("MIC packets=\(decoder.packets) size=\(data.count) seq=\(decoder.sequence.map(String.init) ?? "-") missing=\(decoder.missing) duplicates=\(decoder.duplicates) malformed=\(decoder.malformed) frames=\(decoder.decodedFrames) samples=\(decoder.sampleCount) errors=\(decoder.decodeErrors) asrDrops=\(asrDrops) rms=\(decoder.rms)")
         }
     }
 
