@@ -19,6 +19,9 @@ jobs:
           xcodebuild -version
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Prepare app icon
+        run: |
+          base64 --decode G2LAB/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png.b64 > G2LAB/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
       - name: Download bundled Italian ASR model
         run: |
           mkdir -p G2LAB/Resources/Models
