@@ -36,7 +36,6 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: G2 LAB uses on-device speech recognition for offline captions.
         INFOPLIST_KEY_UIBackgroundModes:
           - bluetooth-central
-          - audio
           - fetch
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     dependencies:
