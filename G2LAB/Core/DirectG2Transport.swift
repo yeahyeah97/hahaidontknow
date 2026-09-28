@@ -1166,7 +1166,6 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         handleTerminalDisconnect(peripheral, error: error, source: "legacy")
     }
 
-    @available(iOS 17.0, *)
     func centralManager(
         _ central: CBCentralManager,
         didDisconnectPeripheral peripheral: CBPeripheral,
