@@ -28,8 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.access
         PRODUCT_NAME: G2 LAB
-        MARKETING_VERSION: 0.5.1
-        CURRENT_PROJECT_VERSION: 2
+        MARKETING_VERSION: 0.5.2
+        CURRENT_PROJECT_VERSION: 3
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         CODE_SIGNING_ALLOWED: "NO"
@@ -53,5 +53,6 @@ targets:
         INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: G2 LAB connects directly to your Even Realities G2 glasses for display, controls, and microphone audio.
         INFOPLIST_KEY_UIBackgroundModes:
           - bluetooth-central
+          - audio
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"

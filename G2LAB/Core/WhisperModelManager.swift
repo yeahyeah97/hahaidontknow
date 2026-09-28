@@ -59,7 +59,7 @@ final class WhisperModelManager: ObservableObject {
     private var sessionGeneration = 0
     private var inferenceTask: Task<Void, Never>?
 
-    private let minimumInferenceSamples = 16_000
+    private let minimumInferenceSamples = 8_000
     private let maximumWindowSamples = 160_000
 
     init() {

@@ -40,6 +40,9 @@ final class DirectG2Transport: NSObject {
     private var central: CBCentralManager?
     private var lenses: [UUID: Lens] = [:]
     private var heartbeat: Timer?
+    private var micStreamWatchdog: Timer?
+    private var lastMicPacketAt: CFAbsoluteTime = 0
+    private var lastMicRearmAt: CFAbsoluteTime = 0
     private var protocolStarted = false
     private(set) var isProtocolReady = false
     private var userWantsMic = false
@@ -86,7 +89,10 @@ final class DirectG2Transport: NSObject {
             central = CBCentralManager(
                 delegate: self,
                 queue: nil,
-                options: [CBCentralManagerOptionShowPowerAlertKey: true]
+                options: [
+                    CBCentralManagerOptionShowPowerAlertKey: true,
+                    CBCentralManagerOptionRestoreIdentifierKey: "com.g2lab.access.central"
+                ]
             )
             return
         }
@@ -111,6 +117,8 @@ final class DirectG2Transport: NSObject {
         captionInitializing = false
         heartbeat?.invalidate()
         heartbeat = nil
+        micStreamWatchdog?.invalidate()
+        micStreamWatchdog = nil
         central?.stopScan()
         for lens in lenses.values {
             central?.cancelPeripheralConnection(lens.peripheral)
@@ -709,6 +717,8 @@ final class DirectG2Transport: NSObject {
         guard userWantsMic, !micOpenedForCurrentConnection, isProtocolReady, micAvailable else { return }
         micOpenedForCurrentConnection = true
         micAckedForCurrentConnection = false
+        lastMicPacketAt = CFAbsoluteTimeGetCurrent()
+        startMicStreamWatchdog()
         pendingEnterMessageIDs.removeAll()
         sendMicControl(status: 2)
         onLog?("MIC OPEN: CTRL ENTER queued L+R; awaiting audio")
@@ -719,6 +729,8 @@ final class DirectG2Transport: NSObject {
     private func disableMicPath() {
         micAckDeadline?.cancel()
         micAckDeadline = nil
+        micStreamWatchdog?.invalidate()
+        micStreamWatchdog = nil
         pendingEnterMessageIDs.removeAll()
         let canSendExit = micOpenedForCurrentConnection && isProtocolReady
         if canSendExit { sendMicControl(status: 3) }
@@ -741,6 +753,22 @@ final class DirectG2Transport: NSObject {
                 onLog?("MIC CTRL EXIT TX \(side.rawValue) msg=\(messageID)")
             }
             send(to: side, serviceHi: 0x07, serviceLo: 0x20, payload: payload)
+        }
+    }
+
+    private func startMicStreamWatchdog() {
+        micStreamWatchdog?.invalidate()
+        micStreamWatchdog = Timer.scheduledTimer(withTimeInterval: 0.50, repeats: true) { [weak self] _ in
+            guard let self, self.userWantsMic, self.isProtocolReady, self.micAvailable else { return }
+            let now = CFAbsoluteTimeGetCurrent()
+            guard now - self.lastMicPacketAt > 0.90,
+                  now - self.lastMicRearmAt > 1.75 else { return }
+            self.lastMicRearmAt = now
+            self.onLog?("MIC WATCHDOG: 6402 stalled — rearming ENTER without dropping BLE")
+            self.pendingEnterMessageIDs.removeAll()
+            self.micAckedForCurrentConnection = false
+            self.sendMicControl(status: 2)
+            self.armMicAckDeadline()
         }
     }
 
@@ -1086,6 +1114,31 @@ final class DirectG2Transport: NSObject {
 }
 
 extension DirectG2Transport: CBCentralManagerDelegate {
+    func centralManager(
+        _ central: CBCentralManager,
+        willRestoreState dict: [String : Any]
+    ) {
+        guard shouldRun else { return }
+        let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
+        onLog?("RESTORE: CoreBluetooth returned \(restored.count) peripheral(s)")
+        for peripheral in restored {
+            let side = knownSide(for: peripheral.identifier)
+                ?? self.side(for: peripheral.name ?? "")
+            guard let side else { continue }
+            if lenses[peripheral.identifier] == nil {
+                let lens = Lens(side: side, peripheral: peripheral)
+                lenses[peripheral.identifier] = lens
+                peripheral.delegate = self
+                persistKnownPeripheral(peripheral, side: side)
+                onLog?("RESTORE: adopted \(side.rawValue) state=\(peripheral.state.rawValue)")
+            }
+            if peripheral.state == .connected {
+                peripheral.discoverServices(nil)
+            }
+        }
+        publishReady()
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         onLog?("DIRECT: central state=\(central.state.rawValue)")
         switch central.state {
@@ -1312,6 +1365,7 @@ extension DirectG2Transport: CBPeripheralDelegate {
         if uuid == Self.audioUUID {
             guard lens.side == .left else { return }
             audioNotificationCount += 1
+            lastMicPacketAt = CFAbsoluteTimeGetCurrent()
             let shouldLogSample = audioNotificationCount == 1 || audioNotificationCount % 20 == 0
             if shouldLogSample {
                 onLog?("6402 RX #\(audioNotificationCount) size=\(data.count)")
