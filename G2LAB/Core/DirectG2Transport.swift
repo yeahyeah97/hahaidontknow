@@ -53,6 +53,8 @@ final class DirectG2Transport: NSObject {
     private static let commandWriteSuffix = "5401"
     private static let commandNotifySuffix = "5402"
     private static let audioUUID = "00002760-08C2-11E1-9073-0E8AC72E6402"
+    private static let knownLeftKey = "g2.direct.known.left"
+    private static let knownRightKey = "g2.direct.known.right"
     private var micOpenedForCurrentConnection = false
     private var micAckedForCurrentConnection = false
     private var pendingEnterMessageIDs = Set<UInt8>()
@@ -94,7 +96,7 @@ final class DirectG2Transport: NSObject {
                 onLog?("DIRECT: protocol already verified")
                 return
             }
-            startFreshScan(recovering: !lenses.isEmpty || recoveryAttempt > 0)
+            resumeKnownPeripheralsThenScan(recovering: !lenses.isEmpty || recoveryAttempt > 0)
         } else {
             onLog?("DIRECT: Bluetooth not powered on yet")
         }
@@ -350,6 +352,56 @@ final class DirectG2Transport: NSObject {
         send(serviceHi: 0x06, serviceLo: 0x20, payload: payload)
     }
 
+    private func knownSide(for identifier: UUID) -> Side? {
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: Self.knownLeftKey) == identifier.uuidString { return .left }
+        if defaults.string(forKey: Self.knownRightKey) == identifier.uuidString { return .right }
+        return nil
+    }
+
+    private func persistKnownPeripheral(_ peripheral: CBPeripheral, side: Side) {
+        let key = side == .left ? Self.knownLeftKey : Self.knownRightKey
+        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: key)
+        registerKnownConnectionEvents()
+    }
+
+    private func knownPeripheralIDs() -> [(Side, UUID)] {
+        let defaults = UserDefaults.standard
+        var result: [(Side, UUID)] = []
+        if let raw = defaults.string(forKey: Self.knownLeftKey), let id = UUID(uuidString: raw) {
+            result.append((.left, id))
+        }
+        if let raw = defaults.string(forKey: Self.knownRightKey), let id = UUID(uuidString: raw) {
+            result.append((.right, id))
+        }
+        return result
+    }
+
+    private func registerKnownConnectionEvents() {
+        guard let central else { return }
+        let ids = knownPeripheralIDs().map { $0.1 }
+        guard !ids.isEmpty else { return }
+        central.registerForConnectionEvents(options: [.peripheralUUIDs: ids])
+    }
+
+    private func resumeKnownPeripheralsThenScan(recovering: Bool) {
+        guard shouldRun, let central, central.state == .poweredOn else { return }
+        registerKnownConnectionEvents()
+
+        var retrieved = 0
+        for (side, identifier) in knownPeripheralIDs() {
+            guard lenses.values.contains(where: { $0.side == side }) == false else { continue }
+            guard let peripheral = central.retrievePeripherals(withIdentifiers: [identifier]).first else { continue }
+            retrieved += 1
+            onLog?("DIRECT: retrieved known \(side.rawValue) \(identifier.uuidString.prefix(8))")
+            attach(peripheral, side: side)
+        }
+        if retrieved > 0 {
+            onLog?("DIRECT: restored \(retrieved) known G2 endpoint(s) before scan")
+        }
+        startFreshScan(recovering: recovering || retrieved > 0)
+    }
+
     private func startFreshScan(recovering: Bool) {
         guard shouldRun, let central, central.state == .poweredOn else { return }
         recoveryWork?.cancel()
@@ -357,14 +409,15 @@ final class DirectG2Transport: NSObject {
         scanWatchdog?.cancel()
         central.stopScan()
 
+        // Never cancel an in-flight connection just because a recovery scan starts.
+        // The official Even build keeps explicit pending/reconnect ownership; our
+        // simpler equivalent preserves .connecting peripherals and only evicts
+        // endpoints CoreBluetooth already considers disconnected.
         let staleIDs = lenses.compactMap { id, lens in
-            lens.peripheral.state == .connected ? nil : id
+            lens.peripheral.state == .disconnected ? id : nil
         }
         for id in staleIDs {
             guard let lens = lenses[id] else { continue }
-            if lens.peripheral.state == .connecting {
-                central.cancelPeripheralConnection(lens.peripheral)
-            }
             lens.peripheral.delegate = nil
             lenses.removeValue(forKey: id)
         }
@@ -492,20 +545,28 @@ final class DirectG2Transport: NSObject {
         }
         for id in sameSideIDs {
             guard let existing = lenses[id] else { continue }
-            guard existing.peripheral.state != .connected else { return }
+            guard existing.peripheral.state != .connected,
+                  existing.peripheral.state != .connecting else { return }
             existing.peripheral.delegate = nil
             lenses.removeValue(forKey: id)
         }
         let lens = Lens(side: side, peripheral: peripheral)
         lenses[peripheral.identifier] = lens
         peripheral.delegate = self
+        persistKnownPeripheral(peripheral, side: side)
         onLog?(hasEnteredRecovery
             ? "RECOVERY: rediscovered \(side.rawValue)"
             : "DIRECT: found \(side.rawValue) \(peripheral.name ?? peripheral.identifier.uuidString)")
-        central?.connect(
-            peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
-        )
+        var options: [String: Any] = [
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+        ]
+        if #available(iOS 17.0, *) {
+            // Even Realities 2.3.1 uses this CoreBluetooth path. When enabled,
+            // iOS owns link-level reconnect and reports whether it is already
+            // reconnecting through the iOS 17 disconnect delegate callback.
+            options[CBConnectPeripheralOptionEnableAutoReconnect] = true
+        }
+        central?.connect(peripheral, options: options)
     }
 
     private func publishReady() {
@@ -1029,7 +1090,10 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         onLog?("DIRECT: central state=\(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
-            if shouldRun { startFreshScan(recovering: hasEnteredRecovery) }
+            if shouldRun {
+                onLog?("RECOVERY: Bluetooth powered on — resume known endpoints first")
+                resumeKnownPeripheralsThenScan(recovering: hasEnteredRecovery)
+            }
         case .poweredOff:
             guard shouldRun else { return }
             hasEnteredRecovery = true
@@ -1078,11 +1142,7 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         peripheral.discoverServices(nil)
     }
 
-    func centralManager(
-        _ central: CBCentralManager,
-        didDisconnectPeripheral peripheral: CBPeripheral,
-        error: Error?
-    ) {
+    private func handleTerminalDisconnect(_ peripheral: CBPeripheral, error: Error?, source: String) {
         guard let lens = lenses[peripheral.identifier] else { return }
         let side = lens.side
         lens.commandReady = false
@@ -1091,11 +1151,67 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         lens.micNotify = nil
         lens.peripheral.delegate = nil
         lenses.removeValue(forKey: peripheral.identifier)
-        onLog?("RECOVERY: disconnect \(side.rawValue)")
+        onLog?("RECOVERY: disconnect \(side.rawValue) source=\(source) err=\(error?.localizedDescription ?? "none")")
         hasEnteredRecovery = true
         resetConnectionState(interruptMic: true)
         publishReady()
         scheduleRecovery()
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        handleTerminalDisconnect(peripheral, error: error, source: "legacy")
+    }
+
+    @available(iOS 17.0, *)
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        timestamp: CFAbsoluteTime,
+        isReconnecting: Bool,
+        error: Error?
+    ) {
+        guard let lens = lenses[peripheral.identifier] else { return }
+        if isReconnecting {
+            lens.commandReady = false
+            lens.commandWrite = nil
+            lens.commandNotify = nil
+            lens.micNotify = nil
+            // Keep the CBPeripheral and its delegate alive. iOS has already
+            // accepted ownership of the reconnect because
+            // CBConnectPeripheralOptionEnableAutoReconnect was enabled.
+            hasEnteredRecovery = true
+            resetConnectionState(interruptMic: true)
+            publishReady()
+            onLinkStateChanged?("RECOVERING")
+            onLog?("RECOVERY: SYSTEM AUTO-RECONNECT \(lens.side.rawValue) in progress")
+            return
+        }
+        handleTerminalDisconnect(peripheral, error: error, source: "iOS17-terminal")
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        connectionEventDidOccur event: CBConnectionEvent,
+        for peripheral: CBPeripheral
+    ) {
+        guard shouldRun else { return }
+        switch event {
+        case .peerConnected:
+            let side = knownSide(for: peripheral.identifier)
+                ?? self.side(for: peripheral.name ?? "")
+            onLog?("DIRECT: system connection event CONNECTED \(side?.rawValue ?? "?")")
+            if lenses[peripheral.identifier] == nil, let side {
+                attach(peripheral, side: side)
+            }
+        case .peerDisconnected:
+            onLog?("DIRECT: system connection event DISCONNECTED")
+        @unknown default:
+            onLog?("DIRECT: unknown CoreBluetooth connection event \(event.rawValue)")
+        }
     }
 
     func centralManager(

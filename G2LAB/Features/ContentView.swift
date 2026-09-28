@@ -59,7 +59,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("G2 ACCESS")
                     .font(.system(size: 27, weight: .black, design: .rounded))
-                Text("NATIVE G2 + OFFLINE WHISPER  •  v0.5.0")
+                Text("NATIVE G2 + OFFLINE WHISPER  •  v0.5.1")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }

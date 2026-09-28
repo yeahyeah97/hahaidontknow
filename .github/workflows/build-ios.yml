@@ -52,15 +52,15 @@ jobs:
         run: |
           APP="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
           test -d "$APP"
-          rm -rf Payload G2_ACCESS_v0.5.0-b1-unsigned.ipa
+          rm -rf Payload G2_ACCESS_v0.5.1-b2-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry G2_ACCESS_v0.5.0-b1-unsigned.ipa Payload
+          /usr/bin/zip -qry G2_ACCESS_v0.5.1-b2-unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: G2_ACCESS_v0.5.0-b1_unsigned_IPA
-          path: G2_ACCESS_v0.5.0-b1-unsigned.ipa
+          name: G2_ACCESS_v0.5.1-b2_unsigned_IPA
+          path: G2_ACCESS_v0.5.1-b2-unsigned.ipa
           retention-days: 7
       - name: Upload build log on failure
         if: failure()
