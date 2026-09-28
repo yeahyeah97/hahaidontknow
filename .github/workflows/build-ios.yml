@@ -2,6 +2,8 @@ name: Build G2 LAB IPA
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["codex/g2-live-captions"]
 
 permissions:
   contents: read
@@ -19,21 +21,25 @@ jobs:
           xcodebuild -version
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Download bundled Italian streaming ASR model
+      - name: Fetch pinned native liblc3 and preserve license
         run: |
           set -euo pipefail
-          MODEL_DIR="G2LAB/Resources/Models/KrokoIT"
-          BASE="https://huggingface.co/hudaiapa88/sherpa-stt-onnx/resolve/24105aa0d6b3b80a82338b12445ed34886871093/it/kroko_64l"
-          mkdir -p "$MODEL_DIR"
-          curl -L --fail --retry 3 "$BASE/encoder.int8.onnx?download=true" -o "$MODEL_DIR/it_encoder.onnx"
-          curl -L --fail --retry 3 "$BASE/decoder.int8.onnx?download=true" -o "$MODEL_DIR/it_decoder.onnx"
-          curl -L --fail --retry 3 "$BASE/joiner.int8.onnx?download=true" -o "$MODEL_DIR/it_joiner.onnx"
-          curl -L --fail --retry 3 "$BASE/tokens.txt?download=true" -o "$MODEL_DIR/it_tokens.txt"
-          test "$(wc -c < "$MODEL_DIR/it_encoder.onnx")" -gt 1000000
-          test "$(wc -c < "$MODEL_DIR/it_decoder.onnx")" -gt 100000
-          test "$(wc -c < "$MODEL_DIR/it_joiner.onnx")" -gt 100000
-          test "$(wc -c < "$MODEL_DIR/it_tokens.txt")" -gt 1000
-          ls -lh "$MODEL_DIR"
+          mkdir -p ThirdParty/liblc3 G2LAB/Resources/Licenses
+          curl -L --fail --retry 3 https://github.com/google/liblc3/archive/96a3af0beb5487aca3b98a4b992a539a1f6d80d1.tar.gz | tar xz --strip-components=1 -C ThirdParty/liblc3
+          cp ThirdParty/liblc3/LICENSE G2LAB/Resources/Licenses/liblc3-LICENSE.txt
+          if [ -f ThirdParty/liblc3/NOTICE ]; then cp ThirdParty/liblc3/NOTICE G2LAB/Resources/Licenses/liblc3-NOTICE.txt; fi
+      - name: Namespace native LC3 to coexist with Mentra
+        run: python3 scripts/namespace_lc3.py
+      - name: Test native audio pipeline on macOS
+        run: |
+          set -euo pipefail
+          mkdir -p build/audio-tests
+          for source in ThirdParty/liblc3/src/*.c G2LAB/Core/G2LC3Bridge.c Tests/Fixture.c; do
+            clang -O2 -include ThirdParty/liblc3/g2_namespace.h -IThirdParty/liblc3/include -IThirdParty/liblc3/src -c "$source" -o "build/audio-tests/$(basename "$source" .c).o"
+          done
+          swiftc -import-objc-header Tests/Fixture.h G2LAB/Core/G2LC3Decoder.swift Tests/AudioPipelineTests.swift build/audio-tests/*.o -o build/audio-tests/run
+          build/audio-tests/run
+          if nm -g build/audio-tests/*.o | grep -E " [TDS] _lc3_"; then exit 1; fi
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve Swift packages
@@ -44,23 +50,24 @@ jobs:
           xcodebuild -project G2LAB.xcodeproj -scheme G2LAB -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee build.log
       - name: Package unsigned IPA
         run: |
-          APP="build/DerivedData/Build/Products/Release-iphoneos/G2LAB.app"
+          APP="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
           test -d "$APP"
-          rm -rf Payload G2_LAB_v0.3.2-b6-unsigned.ipa
+          rm -rf Payload G2_ACCESS_v0.5.4-b5-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry G2_LAB_v0.3.2-b6-unsigned.ipa Payload
+          /usr/bin/zip -qry G2_ACCESS_v0.5.4-b5-unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: G2_LAB_v0.3.2_b6_unsigned_IPA
-          path: G2_LAB_v0.3.2-b6-unsigned.ipa
+          name: G2_ACCESS_v0.5.4-b5_unsigned_IPA
+          path: G2_ACCESS_v0.5.4-b5-unsigned.ipa
           retention-days: 7
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: G2_LAB_build_log
+          name: G2_ACCESS_build_log
           path: build.log
           if-no-files-found: ignore
           retention-days: 7
+

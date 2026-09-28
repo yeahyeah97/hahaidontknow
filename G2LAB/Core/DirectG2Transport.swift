@@ -6,6 +6,12 @@ import CoreBluetooth
 final class DirectG2Transport: NSObject {
     enum Side: String { case left = "L", right = "R" }
 
+    enum InputEvent {
+        case listSelect(name: String, index: Int)
+        case scroll(name: String, direction: Int)
+        case gesture(code: Int)
+    }
+
     final class Lens {
         let side: Side
         let peripheral: CBPeripheral
@@ -25,18 +31,48 @@ final class DirectG2Transport: NSObject {
     var onPacket: ((Side, Data) -> Void)?
     var onMicPacket: ((Data) -> Void)?
     var onProtocolReady: (() -> Void)?
+    var onMicSessionInterrupted: (() -> Void)?
+    var onAudioDiagnostics: ((_ total: Int, _ valid205: Int, _ invalid: Int) -> Void)?
+    var onMicControlState: ((String) -> Void)?
+    var onLinkStateChanged: ((String) -> Void)?
+    var onInputEvent: ((InputEvent) -> Void)?
 
     private var central: CBCentralManager?
     private var lenses: [UUID: Lens] = [:]
     private var heartbeat: Timer?
+    private var micStreamWatchdog: Timer?
+    private var lastMicPacketAt: CFAbsoluteTime = 0
+    private var lastMicRearmAt: CFAbsoluteTime = 0
     private var protocolStarted = false
     private(set) var isProtocolReady = false
-    private var wantsMic = false
+    private var userWantsMic = false
+    private var shouldRun = false
     private var conversateStarted = false
+    private var hudGeneration = 0
+    private var captionDisplayReady = false
+    private var captionInitializing = false
+    private var pendingCaption: String?
 
     private static let commandWriteSuffix = "5401"
     private static let commandNotifySuffix = "5402"
-    private static let displayWriteSuffix = "6402"
+    private static let audioUUID = "00002760-08C2-11E1-9073-0E8AC72E6402"
+    private static let knownLeftKey = "g2.direct.known.left"
+    private static let knownRightKey = "g2.direct.known.right"
+    private var micOpenedForCurrentConnection = false
+    private var micAckedForCurrentConnection = false
+    private var pendingEnterMessageIDs = Set<UInt8>()
+    private var micAckDeadline: DispatchWorkItem?
+    private var recoveryWork: DispatchWorkItem?
+    private var scanWatchdog: DispatchWorkItem?
+    private var protocolWatchdog: DispatchWorkItem?
+    private var recoveryAttempt = 0
+    private var hasEnteredRecovery = false
+    private(set) var audioNotificationCount = 0
+    private(set) var audio205Count = 0
+    private(set) var audioInvalidCount = 0
+    var micAvailable: Bool {
+        lens(.left)?.micNotify?.isNotifying == true && lens(.right) != nil
+    }
 
     private var transportSeq: UInt8 = 0x08
     private var msgID: UInt8 = 0x14
@@ -47,26 +83,43 @@ final class DirectG2Transport: NSObject {
     }
 
     func start() {
+        shouldRun = true
         if central == nil {
             onLog?("DIRECT: creating CBCentralManager on demand")
             central = CBCentralManager(
                 delegate: self,
                 queue: nil,
+                // Do not pass CBCentralManagerOptionRestoreIdentifierKey here.
+                // On the user's iOS 27 build, CoreBluetooth aborts synchronously
+                // inside CBCentralManager.init when that option is present.
+                // Keep retrieval + system auto-reconnect, which do not require it.
                 options: [CBCentralManagerOptionShowPowerAlertKey: true]
             )
             return
         }
 
         if central?.state == .poweredOn {
-            scan()
+            if isProtocolReady {
+                onLog?("DIRECT: protocol already verified")
+                return
+            }
+            resumeKnownPeripheralsThenScan(recovering: !lenses.isEmpty || recoveryAttempt > 0)
         } else {
             onLog?("DIRECT: Bluetooth not powered on yet")
         }
     }
 
     func stop() {
+        setMicEnabled(false)
+        shouldRun = false
+        cancelRecoveryTimers()
+        hudGeneration += 1
+        captionDisplayReady = false
+        captionInitializing = false
         heartbeat?.invalidate()
         heartbeat = nil
+        micStreamWatchdog?.invalidate()
+        micStreamWatchdog = nil
         central?.stopScan()
         for lens in lenses.values {
             central?.cancelPeripheralConnection(lens.peripheral)
@@ -80,12 +133,84 @@ final class DirectG2Transport: NSObject {
     }
 
     func setMicEnabled(_ enabled: Bool) {
-        wantsMic = enabled
+        userWantsMic = enabled
+        if !enabled {
+            disableMicPath()
+            return
+        }
         guard isProtocolReady else {
             onLog?("DIRECT MIC: \(enabled ? "armed — waiting for protocol ready" : "off")")
             return
         }
-        enabled ? enableMicPath() : disableMicPath()
+        enableMicPath()
+    }
+
+
+    /// Native EvenHub list page. The firmware owns focus/scroll and reports
+    /// selected rows on e0-01, instead of the phone faking menu navigation.
+    func openNativeMenu(title: String, items: [String]) {
+        guard isProtocolReady else { onLog?("MENU: link not ready"); return }
+        guard !items.isEmpty else { return }
+
+        send(serviceHi: 0x81, serviceLo: 0x20, payload: [0x08,0x01,0x10,nextMsgID(),0x1A,0x00])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self else { return }
+            self.send(serviceHi: 0x04, serviceLo: 0x20, payload: [
+                0x08,0x01,0x10,self.nextMsgID(),0x1A,0x08,0x08,0x01,0x10,0x01,0x18,0x07,0x28,0x01
+            ])
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            guard let self else { return }
+            var region = Self.hex("08021051228a0108011215080210904e1d00d8ad4525000000002800300038001215080310d00f1d00007a4425000000002800300038001214080410001d0000000025000000002800300038001214080510001d0000b842250000ae422800300038001214080610001d0000c042250000c4422800300038001214080910001d0000000025000000002800300038001800")
+            if region.count > 3 { region[3] = self.nextMsgID() }
+            self.send(serviceHi: 0x0E, serviceLo: 0x20, payload: region)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { [weak self] in
+            guard let self, self.isProtocolReady else { return }
+            self.sendEvenHubPayload(self.makeNativeMenuPayload(title: title, items: items))
+            self.onLog?("MENU: native list launched rows=\(items.count)")
+        }
+    }
+
+    func closeNativeMenu() {
+        guard isProtocolReady else { return }
+        let inner = Self.vfield(1, 0)
+        var payload = Self.vfield(1, 9)
+        payload += Self.vfield(2, Int(nextMsgID()))
+        payload += Self.lfield(11, inner)
+        sendEvenHubPayload(payload)
+        onLog?("MENU: native page closed")
+    }
+
+    private func makeNativeMenuPayload(title: String, items: [String]) -> [UInt8] {
+        let header = Self.textContainer(x: 40, y: 0, w: 504, h: 38, id: 1,
+                                        name: "menu-header", eventCapture: false,
+                                        padding: 5, text: title)
+        let list = Self.listContainer(x: 60, y: 43, w: 456, h: 245, id: 2,
+                                      name: "menu-list", itemWidth: 456,
+                                      items: items, eventCapture: true)
+        var wrapper = Self.vfield(1, 2)
+        wrapper += Self.lfield(2, list)
+        wrapper += Self.lfield(3, header)
+        wrapper += Self.vfield(5, 11417) // catalog token proven on direct cold-launch paths
+
+        var payload = Self.vfield(1, 0)
+        payload += Self.vfield(2, Int(nextMsgID()))
+        payload += Self.lfield(3, wrapper)
+        return payload
+    }
+
+    private func sendEvenHubPayload(_ payload: [UInt8]) {
+        guard let target = lens(.right), let write = target.commandWrite else {
+            onLog?("MENU: R command channel unavailable")
+            return
+        }
+        let frames = Self.evenHubPackets(seq: nextTransportSeq(), payload: Data(payload))
+        for (index, frame) in frames.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.012) {
+                target.peripheral.writeValue(frame, for: write, type: .withoutResponse)
+            }
+        }
     }
 
     func showText(_ text: String, final: Bool = true) {
@@ -96,12 +221,49 @@ final class DirectG2Transport: NSObject {
         sendTeleprompter(text)
     }
 
+    func showCaption(_ text: String) {
+        guard isProtocolReady else { return }
+        pendingCaption = text
+        if captionDisplayReady { flushCaption(); return }
+        guard !captionInitializing else { return }
+        sendTeleprompter(text, captionLayout: true)
+        captionInitializing = true
+        let generation = hudGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in
+            guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+            self.captionInitializing = false
+            self.captionDisplayReady = true
+            self.flushCaption()
+        }
+    }
+
+    func cancelCaptionUpdates() {
+        if captionInitializing || captionDisplayReady {
+            hudGeneration += 1
+            captionInitializing = false
+            captionDisplayReady = false
+            pendingCaption = nil
+        }
+    }
+
+    private func flushCaption() {
+        guard let text = pendingCaption else { return }
+        pendingCaption = nil
+        sendContentPage(index: 0, text: Self.pageText(Self.wrap(text: text, width: 25, maxLines: 10)))
+        send(serviceHi: 0x80, serviceLo: 0x00,
+             payload: [0x08, 0x0E, 0x10, nextMsgID(), 0x6A, 0x00])
+    }
+
     func clearText() {
         guard isProtocolReady else { return }
         sendTeleprompter(" ")
     }
 
-    private func sendTeleprompter(_ text: String) {
+    private func sendTeleprompter(_ text: String, captionLayout: Bool = false) {
+        hudGeneration += 1
+        let generation = hudGeneration
+        captionDisplayReady = false
+        captionInitializing = false
         // Known-working clean-room teleprompter path:
         // 0E-20 display config -> 06-20 init -> 06-20 content pages -> 80-00 sync.
         let displayConfig = Self.hex(
@@ -118,7 +280,7 @@ final class DirectG2Transport: NSObject {
         cfgPayload += displayConfig
 
         let lines = Self.wrap(text: text, width: 25, maxLines: 10)
-        let contentHeight = max(1, (max(lines.count, 1) * 2665) / 140)
+        let contentHeight = max(1, ((captionLayout ? 10 : max(lines.count, 1)) * 2665) / 140)
         var display: [UInt8] = [0x08,0x01,0x10,0x00,0x18,0x00,0x20,0x8B,0x02,0x28]
         display += Self.varint(UInt64(contentHeight))
         display += [0x30,0xE6,0x01,0x38,0x8E,0x0A,0x40,0x05,0x48,0x00]
@@ -136,20 +298,22 @@ final class DirectG2Transport: NSObject {
         send(serviceHi: 0x0E, serviceLo: 0x20, payload: cfgPayload)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
-            self?.send(serviceHi: 0x06, serviceLo: 0x20, payload: initPayload)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+            self.send(serviceHi: 0x06, serviceLo: 0x20, payload: initPayload)
         }
 
         var t = 0.80
         for i in 0..<10 {
             let page = pages[i]
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.sendContentPage(index: i, text: page)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+                self.sendContentPage(index: i, text: page)
             }
             t += 0.10
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-            guard let self else { return }
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
             self.send(serviceHi: 0x06, serviceLo: 0x20,
                       payload: [0x08,0xFF,0x01,0x10,self.nextMsgID(),0x6A,0x04,0x08,0x00,0x10,0x06])
         }
@@ -158,13 +322,14 @@ final class DirectG2Transport: NSObject {
         for i in 10..<12 {
             let page = pages[i]
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.sendContentPage(index: i, text: page)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+                self.sendContentPage(index: i, text: page)
             }
             t += 0.10
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-            guard let self else { return }
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
             self.send(serviceHi: 0x80, serviceLo: 0x00,
                       payload: [0x08,0x0E,0x10,self.nextMsgID(),0x6A,0x00])
         }
@@ -173,7 +338,8 @@ final class DirectG2Transport: NSObject {
         for i in 12..<14 {
             let page = pages[i]
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.sendContentPage(index: i, text: page)
+                guard let self, self.hudGeneration == generation, self.isProtocolReady else { return }
+                self.sendContentPage(index: i, text: page)
             }
             t += 0.10
         }
@@ -195,13 +361,182 @@ final class DirectG2Transport: NSObject {
         send(serviceHi: 0x06, serviceLo: 0x20, payload: payload)
     }
 
-    private func scan() {
-        guard let central, central.state == .poweredOn else { return }
-        onLog?("DIRECT: scanning for Even G2 L/R")
+    private func knownSide(for identifier: UUID) -> Side? {
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: Self.knownLeftKey) == identifier.uuidString { return .left }
+        if defaults.string(forKey: Self.knownRightKey) == identifier.uuidString { return .right }
+        return nil
+    }
+
+    private func persistKnownPeripheral(_ peripheral: CBPeripheral, side: Side) {
+        let key = side == .left ? Self.knownLeftKey : Self.knownRightKey
+        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: key)
+        registerKnownConnectionEvents()
+    }
+
+    private func knownPeripheralIDs() -> [(Side, UUID)] {
+        let defaults = UserDefaults.standard
+        var result: [(Side, UUID)] = []
+        if let raw = defaults.string(forKey: Self.knownLeftKey), let id = UUID(uuidString: raw) {
+            result.append((.left, id))
+        }
+        if let raw = defaults.string(forKey: Self.knownRightKey), let id = UUID(uuidString: raw) {
+            result.append((.right, id))
+        }
+        return result
+    }
+
+    private func registerKnownConnectionEvents() {
+        guard let central else { return }
+        let ids = knownPeripheralIDs().map { $0.1 }
+        guard !ids.isEmpty else { return }
+        central.registerForConnectionEvents(options: [.peripheralUUIDs: ids])
+    }
+
+    private func resumeKnownPeripheralsThenScan(recovering: Bool) {
+        guard shouldRun, let central, central.state == .poweredOn else { return }
+        registerKnownConnectionEvents()
+
+        var retrieved = 0
+        for (side, identifier) in knownPeripheralIDs() {
+            guard lenses.values.contains(where: { $0.side == side }) == false else { continue }
+            guard let peripheral = central.retrievePeripherals(withIdentifiers: [identifier]).first else { continue }
+            retrieved += 1
+            onLog?("DIRECT: retrieved known \(side.rawValue) \(identifier.uuidString.prefix(8))")
+            attach(peripheral, side: side)
+        }
+        if retrieved > 0 {
+            onLog?("DIRECT: restored \(retrieved) known G2 endpoint(s) before scan")
+        }
+        startFreshScan(recovering: recovering || retrieved > 0)
+    }
+
+    private func startFreshScan(recovering: Bool) {
+        guard shouldRun, let central, central.state == .poweredOn else { return }
+        recoveryWork?.cancel()
+        recoveryWork = nil
+        scanWatchdog?.cancel()
+        central.stopScan()
+
+        // Never cancel an in-flight connection just because a recovery scan starts.
+        // The official Even build keeps explicit pending/reconnect ownership; our
+        // simpler equivalent preserves .connecting peripherals and only evicts
+        // endpoints CoreBluetooth already considers disconnected.
+        let staleIDs = lenses.compactMap { id, lens in
+            lens.peripheral.state == .disconnected ? id : nil
+        }
+        for id in staleIDs {
+            guard let lens = lenses[id] else { continue }
+            lens.peripheral.delegate = nil
+            lenses.removeValue(forKey: id)
+        }
+        publishReady()
+
+        onLinkStateChanged?(recovering ? "RECOVERING" : "CONNECTING")
+        onLog?(recovering
+            ? "RECOVERY: rescan attempt \(max(1, recoveryAttempt))"
+            : "DIRECT: scanning for Even G2 L/R")
         central.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
+        if hasBothUsableLenses {
+            central.stopScan()
+            tryStartProtocol()
+        }
+        armScanWatchdog()
+    }
+
+    private func armScanWatchdog() {
+        scanWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldRun, !self.hasBothUsableLenses else { return }
+            let missing = [Side.left, .right]
+                .filter { self.lens($0) == nil }
+                .map(\.rawValue)
+                .joined(separator: "+")
+            self.onLog?("RECOVERY: scan watchdog missing \(missing.isEmpty ? "usable channels" : missing)")
+            let unusableIDs = self.lenses.compactMap { id, lens in
+                lens.commandReady ? nil : id
+            }
+            for id in unusableIDs {
+                guard let lens = self.lenses.removeValue(forKey: id) else { continue }
+                lens.peripheral.delegate = nil
+                self.central?.cancelPeripheralConnection(lens.peripheral)
+            }
+            self.resetConnectionState(interruptMic: true)
+            self.publishReady()
+            self.scheduleRecovery()
+        }
+        scanWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
+    }
+
+    private var hasBothUsableLenses: Bool {
+        lens(.left) != nil && lens(.right) != nil
+    }
+
+    private func cancelRecoveryTimers() {
+        recoveryWork?.cancel()
+        recoveryWork = nil
+        scanWatchdog?.cancel()
+        scanWatchdog = nil
+        protocolWatchdog?.cancel()
+        protocolWatchdog = nil
+        micAckDeadline?.cancel()
+        micAckDeadline = nil
+    }
+
+    private func scheduleRecovery() {
+        guard shouldRun, central?.state == .poweredOn, recoveryWork == nil else { return }
+        hasEnteredRecovery = true
+        onLinkStateChanged?("RECOVERING")
+        let delays: [Double] = [0.5, 1, 2, 4, 5]
+        let delay = delays[min(recoveryAttempt, delays.count - 1)]
+        recoveryAttempt += 1
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.recoveryWork = nil
+            self.startFreshScan(recovering: true)
+        }
+        recoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func resetConnectionState(interruptMic: Bool) {
+        protocolStarted = false
+        isProtocolReady = false
+        conversateStarted = false
+        micOpenedForCurrentConnection = false
+        micAckedForCurrentConnection = false
+        pendingEnterMessageIDs.removeAll()
+        micAckDeadline?.cancel()
+        micAckDeadline = nil
+        protocolWatchdog?.cancel()
+        protocolWatchdog = nil
+        heartbeat?.invalidate()
+        heartbeat = nil
+        hudGeneration += 1
+        captionDisplayReady = false
+        captionInitializing = false
+        if interruptMic { onMicSessionInterrupted?() }
+        if userWantsMic { onMicControlState?("WAITING") }
+        onLog?("RECOVERY: reset transport state")
+    }
+
+    private func recoverPeripheral(_ peripheral: CBPeripheral, reason: String) {
+        guard let lens = lenses.removeValue(forKey: peripheral.identifier) else { return }
+        onLog?("RECOVERY: \(reason) \(lens.side.rawValue)")
+        lens.commandReady = false
+        lens.commandWrite = nil
+        lens.commandNotify = nil
+        lens.micNotify = nil
+        peripheral.delegate = nil
+        central?.cancelPeripheralConnection(peripheral)
+        hasEnteredRecovery = true
+        resetConnectionState(interruptMic: true)
+        publishReady()
+        scheduleRecovery()
     }
 
     private func side(for name: String) -> Side? {
@@ -214,14 +549,33 @@ final class DirectG2Transport: NSObject {
 
     private func attach(_ peripheral: CBPeripheral, side: Side) {
         guard lenses[peripheral.identifier] == nil else { return }
+        let sameSideIDs = lenses.compactMap { id, existing in
+            existing.side == side ? id : nil
+        }
+        for id in sameSideIDs {
+            guard let existing = lenses[id] else { continue }
+            guard existing.peripheral.state != .connected,
+                  existing.peripheral.state != .connecting else { return }
+            existing.peripheral.delegate = nil
+            lenses.removeValue(forKey: id)
+        }
         let lens = Lens(side: side, peripheral: peripheral)
         lenses[peripheral.identifier] = lens
         peripheral.delegate = self
-        onLog?("DIRECT: found \(side.rawValue) \(peripheral.name ?? peripheral.identifier.uuidString)")
-        central?.connect(
-            peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
-        )
+        persistKnownPeripheral(peripheral, side: side)
+        onLog?(hasEnteredRecovery
+            ? "RECOVERY: rediscovered \(side.rawValue)"
+            : "DIRECT: found \(side.rawValue) \(peripheral.name ?? peripheral.identifier.uuidString)")
+        var options: [String: Any] = [
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+        ]
+        if #available(iOS 17.0, *) {
+            // Even Realities 2.3.1 uses this CoreBluetooth path. When enabled,
+            // iOS owns link-level reconnect and reports whether it is already
+            // reconnecting through the iOS 17 disconnect delegate callback.
+            options[CBConnectPeripheralOptionEnableAutoReconnect] = true
+        }
+        central?.connect(peripheral, options: options)
     }
 
     private func publishReady() {
@@ -240,9 +594,12 @@ final class DirectG2Transport: NSObject {
     }
 
     private func tryStartProtocol() {
-        guard !protocolStarted, let primary = primaryLens() else { return }
+        guard !protocolStarted, hasBothUsableLenses, let primary = primaryLens() else { return }
         protocolStarted = true
-        onLog?("DIRECT: L command channel ready; starting capture-derived auth")
+        scanWatchdog?.cancel()
+        scanWatchdog = nil
+        onLog?("DIRECT: L+R command channels ready; starting capture-derived auth")
+        armProtocolWatchdog()
 
         let auth = authPackets()
         for (index, packet) in auth.enumerated() {
@@ -256,6 +613,24 @@ final class DirectG2Transport: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) { [weak self] in
             self?.sendCoreInit()
         }
+    }
+
+    private func armProtocolWatchdog() {
+        protocolWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldRun, !self.isProtocolReady else { return }
+            self.onLog?("RECOVERY: RIGHT protocol verification timeout")
+            if let right = self.lenses.first(where: { $0.value.side == .right }) {
+                self.lenses.removeValue(forKey: right.key)
+                right.value.peripheral.delegate = nil
+                self.central?.cancelPeripheralConnection(right.value.peripheral)
+            }
+            self.resetConnectionState(interruptMic: true)
+            self.publishReady()
+            self.scheduleRecovery()
+        }
+        protocolWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
     private func sendCoreInit() {
@@ -340,13 +715,55 @@ final class DirectG2Transport: NSObject {
     }
 
     private func enableMicPath() {
-        // 6402 is a display/rendering WRITE characteristic, not a microphone stream.
-        // Keep this explicit until the real G2 audio transport is captured.
-        onLog?("DIRECT MIC: not implemented yet — 6402 is DISPLAY, not microphone")
+        guard userWantsMic, !micOpenedForCurrentConnection, isProtocolReady, micAvailable else { return }
+        micOpenedForCurrentConnection = true
+        micAckedForCurrentConnection = false
+        lastMicPacketAt = CFAbsoluteTimeGetCurrent()
+        pendingEnterMessageIDs.removeAll()
+        sendMicControl(status: 2)
+        onLog?("MIC OPEN: CTRL ENTER queued L+R; awaiting audio")
+        onMicControlState?("ENTER SENT")
+        armMicAckDeadline()
     }
 
     private func disableMicPath() {
-        onLog?("DIRECT MIC: OFF")
+        micAckDeadline?.cancel()
+        micAckDeadline = nil
+        pendingEnterMessageIDs.removeAll()
+        let canSendExit = micOpenedForCurrentConnection && isProtocolReady
+        if canSendExit { sendMicControl(status: 3) }
+        micOpenedForCurrentConnection = false
+        micAckedForCurrentConnection = false
+        onLog?(canSendExit
+            ? "MIC CLOSE: CTRL EXIT queued L+R"
+            : "MIC CLOSE: no active connection to close")
+        onMicControlState?("IDLE")
+    }
+
+    private func sendMicControl(status: UInt8) {
+        for side in [Side.left, .right] {
+            let messageID = nextMsgID()
+            let payload: [UInt8] = [0x08, 0x01, 0x10, messageID, 0x1A, 0x02, 0x08, status]
+            if status == 2 {
+                pendingEnterMessageIDs.insert(messageID)
+                onLog?("MIC CTRL ENTER TX \(side.rawValue) msg=\(messageID)")
+            } else {
+                onLog?("MIC CTRL EXIT TX \(side.rawValue) msg=\(messageID)")
+            }
+            send(to: side, serviceHi: 0x07, serviceLo: 0x20, payload: payload)
+        }
+    }
+
+    private func armMicAckDeadline() {
+        micAckDeadline?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.userWantsMic, self.micOpenedForCurrentConnection,
+                  !self.micAckedForCurrentConnection else { return }
+            self.onLog?("MIC CTRL: NO 07-20 RESPONSE AFTER ENTER")
+            self.onMicControlState?("NO RESPONSE")
+        }
+        micAckDeadline = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     private func startHeartbeat() {
@@ -444,6 +861,144 @@ final class DirectG2Transport: NSObject {
         return payload
     }
 
+    private static func key(_ field: Int, _ wire: Int) -> [UInt8] {
+        varint(UInt64((field << 3) | wire))
+    }
+
+    private static func vfield(_ field: Int, _ value: Int) -> [UInt8] {
+        key(field, 0) + varint(UInt64(value))
+    }
+
+    private static func lfield(_ field: Int, _ body: [UInt8]) -> [UInt8] {
+        key(field, 2) + varint(UInt64(body.count)) + body
+    }
+
+    private static func sfield(_ field: Int, _ value: String) -> [UInt8] {
+        lfield(field, Array(value.utf8))
+    }
+
+    private static func textContainer(x: Int, y: Int, w: Int, h: Int, id: Int,
+                                      name: String, eventCapture: Bool,
+                                      padding: Int, text: String) -> [UInt8] {
+        var out: [UInt8] = []
+        out += vfield(1, x); out += vfield(2, y); out += vfield(3, w); out += vfield(4, h)
+        out += vfield(5, 0); out += vfield(8, padding)
+        out += vfield(9, id); out += sfield(10, name)
+        out += vfield(11, eventCapture ? 1 : 0); out += sfield(12, text)
+        return out
+    }
+
+    private static func listContainer(x: Int, y: Int, w: Int, h: Int, id: Int,
+                                      name: String, itemWidth: Int, items: [String],
+                                      eventCapture: Bool) -> [UInt8] {
+        var item: [UInt8] = []
+        item += vfield(1, items.count); item += vfield(2, itemWidth); item += vfield(3, 1)
+        for value in items { item += sfield(4, value) }
+
+        var out: [UInt8] = []
+        out += vfield(1, x); out += vfield(2, y); out += vfield(3, w); out += vfield(4, h)
+        out += vfield(5, 0); out += vfield(8, 0)
+        out += vfield(9, id); out += sfield(10, name)
+        out += lfield(11, item); out += vfield(12, eventCapture ? 1 : 0)
+        return out
+    }
+
+    private static func evenHubPackets(seq: UInt8, payload: Data) -> [Data] {
+        let maxChunk = 232
+        let crc = crc16(payload)
+        let total = max(1, Int(ceil(Double(payload.count) / Double(maxChunk))))
+        var frames: [Data] = []
+        var offset = 0
+        for serial in 1...total {
+            let end = min(offset + maxChunk, payload.count)
+            let chunk = payload.subdata(in: offset..<end)
+            let isFinal = serial == total
+            var frame = Data([0xAA,0x21,seq,UInt8(chunk.count + (isFinal ? 2 : 0)),
+                              UInt8(total),UInt8(serial),0xE0,0x20])
+            frame.append(chunk)
+            if isFinal {
+                frame.append(UInt8(crc & 0xFF))
+                frame.append(UInt8((crc >> 8) & 0xFF))
+            }
+            frames.append(frame)
+            offset = end
+        }
+        return frames
+    }
+
+    private static func decodeEvenHubInput(payload: Data) -> InputEvent? {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 5, bytes[0] == 0x08, bytes[1] == 0x02, bytes[2] == 0x6A else { return nil }
+        var index = 3
+        guard let f13Length = readVarint(bytes, index: &index),
+              f13Length <= UInt64(bytes.count - index) else { return nil }
+        let end = index + Int(f13Length)
+        guard index < end else { return nil }
+        let subType = bytes[index]; index += 1
+        guard let subLength = readVarint(bytes, index: &index),
+              subLength <= UInt64(end - index) else { return nil }
+        let subEnd = index + Int(subLength)
+
+        if subType == 0x0A {
+            var name = ""; var selected = 0
+            while index < subEnd {
+                let tag = bytes[index]; index += 1
+                switch tag {
+                case 0x08: _ = readVarint(bytes, index: &index)
+                case 0x12:
+                    guard let n = readVarint(bytes, index: &index), n <= UInt64(subEnd - index) else { return nil }
+                    name = String(bytes: bytes[index..<(index + Int(n))], encoding: .utf8) ?? ""
+                    index += Int(n)
+                case 0x20:
+                    guard let v = readVarint(bytes, index: &index) else { return nil }
+                    selected = Int(v)
+                default: return nil
+                }
+            }
+            return .listSelect(name: name, index: selected)
+        }
+
+        if subType == 0x12 {
+            var name = ""; var direction = -1
+            while index < subEnd {
+                let tag = bytes[index]; index += 1
+                switch tag {
+                case 0x08: _ = readVarint(bytes, index: &index)
+                case 0x12:
+                    guard let n = readVarint(bytes, index: &index), n <= UInt64(subEnd - index) else { return nil }
+                    name = String(bytes: bytes[index..<(index + Int(n))], encoding: .utf8) ?? ""
+                    index += Int(n)
+                case 0x18:
+                    guard let v = readVarint(bytes, index: &index) else { return nil }
+                    direction = Int(v)
+                default: return nil
+                }
+            }
+            return .scroll(name: name, direction: direction)
+        }
+
+        if subType == 0x1A {
+            var code = 0
+            if index < subEnd, bytes[index] == 0x08 {
+                index += 1
+                if let v = readVarint(bytes, index: &index) { code = Int(v) }
+            }
+            return .gesture(code: code)
+        }
+        return nil
+    }
+
+    private static func readVarint(_ bytes: [UInt8], index: inout Int) -> UInt64? {
+        var result: UInt64 = 0; var shift: UInt64 = 0
+        while index < bytes.count, shift < 64 {
+            let byte = bytes[index]; index += 1
+            result |= UInt64(byte & 0x7F) << shift
+            if byte & 0x80 == 0 { return result }
+            shift += 7
+        }
+        return nil
+    }
+
     private static func packet(
         seq: UInt8,
         serviceHi: UInt8,
@@ -460,6 +1015,17 @@ final class DirectG2Transport: NSObject {
         out.append(UInt8(crc & 0xFF))
         out.append(UInt8((crc >> 8) & 0xFF))
         return out
+    }
+
+    private static func protobufMessageID(in packet: Data) -> UInt8? {
+        guard packet.count > 10 else { return nil }
+        let payloadEnd = max(8, packet.count - 2)
+        var index = 8
+        while index + 1 < payloadEnd {
+            if packet[index] == 0x10 { return packet[index + 1] }
+            index += 1
+        }
+        return nil
     }
 
     private static func crc16(_ data: Data) -> UInt16 {
@@ -530,9 +1096,58 @@ final class DirectG2Transport: NSObject {
 }
 
 extension DirectG2Transport: CBCentralManagerDelegate {
+    func centralManager(
+        _ central: CBCentralManager,
+        willRestoreState dict: [String : Any]
+    ) {
+        guard shouldRun else { return }
+        let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
+        onLog?("RESTORE: CoreBluetooth returned \(restored.count) peripheral(s)")
+        for peripheral in restored {
+            let side = knownSide(for: peripheral.identifier)
+                ?? self.side(for: peripheral.name ?? "")
+            guard let side else { continue }
+            if lenses[peripheral.identifier] == nil {
+                let lens = Lens(side: side, peripheral: peripheral)
+                lenses[peripheral.identifier] = lens
+                peripheral.delegate = self
+                persistKnownPeripheral(peripheral, side: side)
+                onLog?("RESTORE: adopted \(side.rawValue) state=\(peripheral.state.rawValue)")
+            }
+            if peripheral.state == .connected {
+                peripheral.discoverServices(nil)
+            }
+        }
+        publishReady()
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         onLog?("DIRECT: central state=\(central.state.rawValue)")
-        if central.state == .poweredOn { scan() }
+        switch central.state {
+        case .poweredOn:
+            if shouldRun {
+                onLog?("RECOVERY: Bluetooth powered on — resume known endpoints first")
+                resumeKnownPeripheralsThenScan(recovering: hasEnteredRecovery)
+            }
+        case .poweredOff:
+            guard shouldRun else { return }
+            hasEnteredRecovery = true
+            cancelRecoveryTimers()
+            resetConnectionState(interruptMic: true)
+            for lens in lenses.values {
+                lens.commandReady = false
+                lens.commandWrite = nil
+                lens.commandNotify = nil
+                lens.micNotify = nil
+                lens.peripheral.delegate = nil
+            }
+            lenses.removeAll()
+            publishReady()
+            onLinkStateChanged?("RECOVERING")
+            onLog?("RECOVERY: Bluetooth powered off")
+        default:
+            break
+        }
     }
 
     func centralManager(
@@ -555,9 +1170,27 @@ extension DirectG2Transport: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         guard let lens = lenses[peripheral.identifier] else { return }
-        onLog?("DIRECT: BLE connected \(lens.side.rawValue)")
+        onLog?(hasEnteredRecovery
+            ? "RECOVERY: connected \(lens.side.rawValue)"
+            : "DIRECT: BLE connected \(lens.side.rawValue)")
         peripheral.delegate = self
         peripheral.discoverServices(nil)
+    }
+
+    private func handleTerminalDisconnect(_ peripheral: CBPeripheral, error: Error?, source: String) {
+        guard let lens = lenses[peripheral.identifier] else { return }
+        let side = lens.side
+        lens.commandReady = false
+        lens.commandWrite = nil
+        lens.commandNotify = nil
+        lens.micNotify = nil
+        lens.peripheral.delegate = nil
+        lenses.removeValue(forKey: peripheral.identifier)
+        onLog?("RECOVERY: disconnect \(side.rawValue) source=\(source) err=\(error?.localizedDescription ?? "none")")
+        hasEnteredRecovery = true
+        resetConnectionState(interruptMic: true)
+        publishReady()
+        scheduleRecovery()
     }
 
     func centralManager(
@@ -565,26 +1198,54 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        handleTerminalDisconnect(peripheral, error: error, source: "legacy")
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        timestamp: CFAbsoluteTime,
+        isReconnecting: Bool,
+        error: Error?
+    ) {
         guard let lens = lenses[peripheral.identifier] else { return }
-        lens.commandReady = false
-        lens.commandWrite = nil
-        lens.commandNotify = nil
-        lens.micNotify = nil
-        publishReady()
-
-        if lens.side == .left {
-            protocolStarted = false
-            isProtocolReady = false
-            conversateStarted = false
-            heartbeat?.invalidate()
-            heartbeat = nil
+        if isReconnecting {
+            lens.commandReady = false
+            lens.commandWrite = nil
+            lens.commandNotify = nil
+            lens.micNotify = nil
+            // Keep the CBPeripheral and its delegate alive. iOS has already
+            // accepted ownership of the reconnect because
+            // CBConnectPeripheralOptionEnableAutoReconnect was enabled.
+            hasEnteredRecovery = true
+            resetConnectionState(interruptMic: true)
+            publishReady()
+            onLinkStateChanged?("RECOVERING")
+            onLog?("RECOVERY: SYSTEM AUTO-RECONNECT \(lens.side.rawValue) in progress")
+            return
         }
+        handleTerminalDisconnect(peripheral, error: error, source: "iOS17-terminal")
+    }
 
-        onLog?("DIRECT: \(lens.side.rawValue) disconnected — reconnecting")
-        central.connect(
-            peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
-        )
+    func centralManager(
+        _ central: CBCentralManager,
+        connectionEventDidOccur event: CBConnectionEvent,
+        for peripheral: CBPeripheral
+    ) {
+        guard shouldRun else { return }
+        switch event {
+        case .peerConnected:
+            let side = knownSide(for: peripheral.identifier)
+                ?? self.side(for: peripheral.name ?? "")
+            onLog?("DIRECT: system connection event CONNECTED \(side?.rawValue ?? "?")")
+            if lenses[peripheral.identifier] == nil, let side {
+                attach(peripheral, side: side)
+            }
+        case .peerDisconnected:
+            onLog?("DIRECT: system connection event DISCONNECTED")
+        @unknown default:
+            onLog?("DIRECT: unknown CoreBluetooth connection event \(event.rawValue)")
+        }
     }
 
     func centralManager(
@@ -592,10 +1253,9 @@ extension DirectG2Transport: CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
-        onLog?("DIRECT: connect failed \(error?.localizedDescription ?? "unknown")")
-        central.connect(
+        recoverPeripheral(
             peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
+            reason: "connect failed: \(error?.localizedDescription ?? "unknown")"
         )
     }
 }
@@ -604,6 +1264,7 @@ extension DirectG2Transport: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             onLog?("DIRECT: service discovery error \(error.localizedDescription)")
+            recoverPeripheral(peripheral, reason: "service discovery failed")
             return
         }
 
@@ -619,6 +1280,7 @@ extension DirectG2Transport: CBPeripheralDelegate {
     ) {
         if let error {
             onLog?("DIRECT: characteristic error \(error.localizedDescription)")
+            recoverPeripheral(peripheral, reason: "characteristic discovery failed")
             return
         }
         guard let lens = lenses[peripheral.identifier] else { return }
@@ -632,8 +1294,9 @@ extension DirectG2Transport: CBPeripheralDelegate {
                 lens.commandNotify = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
                 onLog?("DIRECT: \(lens.side.rawValue) found 5402")
-            } else if uuid.hasSuffix(Self.displayWriteSuffix) {
-                onLog?("DIRECT: \(lens.side.rawValue) found 6402 DISPLAY")
+            } else if uuid == Self.audioUUID, lens.side == .left {
+                lens.micNotify = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
             }
         }
 
@@ -649,7 +1312,22 @@ extension DirectG2Transport: CBPeripheralDelegate {
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        if characteristic.uuid.uuidString.uppercased() == Self.audioUUID {
+            guard lenses[peripheral.identifier]?.side == .left else { return }
+            if error == nil && characteristic.isNotifying {
+                onLog?("6402 LEFT NOTIFY ON")
+                enableMicPath()
+            } else {
+                recoverPeripheral(peripheral, reason: "LEFT 6402 notify unavailable")
+            }
+            return
+        }
         let suffix = String(characteristic.uuid.uuidString.suffix(4)).uppercased()
+        if suffix == Self.commandNotifySuffix,
+           error != nil || !characteristic.isNotifying {
+            recoverPeripheral(peripheral, reason: "5402 notify unavailable")
+            return
+        }
         if let error {
             onLog?("DIRECT: notify \(suffix) failed \(error.localizedDescription)")
         } else {
@@ -666,18 +1344,74 @@ extension DirectG2Transport: CBPeripheralDelegate {
               let lens = lenses[peripheral.identifier] else { return }
 
         let uuid = characteristic.uuid.uuidString.uppercased()
+        if uuid == Self.audioUUID {
+            guard lens.side == .left else { return }
+            audioNotificationCount += 1
+            lastMicPacketAt = CFAbsoluteTimeGetCurrent()
+            let shouldLogSample = audioNotificationCount == 1 || audioNotificationCount % 20 == 0
+            if shouldLogSample {
+                onLog?("6402 RX #\(audioNotificationCount) size=\(data.count)")
+            }
+            if audioNotificationCount == 1 {
+                onLog?("6402 FIRST PACKET size=\(data.count)")
+            }
+            if data.count == 205 {
+                audio205Count += 1
+                if shouldLogSample {
+                    onLog?("6402 VALID 205B seq=\(data[204])")
+                }
+            } else {
+                audioInvalidCount += 1
+                onLog?("6402 INVALID SIZE=\(data.count)")
+            }
+            onAudioDiagnostics?(audioNotificationCount, audio205Count, audioInvalidCount)
+            if data.count == 205, userWantsMic { onMicPacket?(data) }
+            return
+        }
         if uuid.hasSuffix(Self.commandNotifySuffix) {
             onPacket?(lens.side, data)
+            let serviceHi = data.count > 6 ? data[6] : 0
+            let serviceLo = data.count > 7 ? data[7] : 0
+            if serviceHi == 0xE0, serviceLo == 0x01, data.count > 10,
+               let event = Self.decodeEvenHubInput(payload: Data(data[8..<(data.count - 2)])) {
+                onInputEvent?(event)
+            }
+            let incomingMessageID = Self.protobufMessageID(in: data)
+            if serviceHi == 0x07, serviceLo == 0x20 {
+                let message = incomingMessageID.map(String.init) ?? "?"
+                onLog?("MIC CTRL RX \(lens.side.rawValue) svc=07-20 msg=\(message)")
+                if micOpenedForCurrentConnection,
+                   let incomingMessageID,
+                   pendingEnterMessageIDs.contains(incomingMessageID) {
+                    onLog?("MIC CTRL ACK \(lens.side.rawValue) svc=07-20 msg=\(message)")
+                    micAckedForCurrentConnection = true
+                    pendingEnterMessageIDs.remove(incomingMessageID)
+                    micAckDeadline?.cancel()
+                    micAckDeadline = nil
+                    onMicControlState?("ACK")
+                }
+            }
 
             // Do not declare protocol readiness on a timer. A real response from
             // the RIGHT lens proves that the app-level handshake is alive.
-            if lens.side == .right, protocolStarted, !isProtocolReady {
+            if lens.side == .right, protocolStarted, hasBothUsableLenses, !isProtocolReady {
                 isProtocolReady = true
+                protocolWatchdog?.cancel()
+                protocolWatchdog = nil
+                recoveryWork?.cancel()
+                recoveryWork = nil
+                recoveryAttempt = 0
+                onLinkStateChanged?("VERIFIED")
                 onLog?("DIRECT: VERIFIED 5402 response from RIGHT — protocol READY")
+                if hasEnteredRecovery {
+                    onLog?("RECOVERY: protocol restored")
+                    hasEnteredRecovery = false
+                }
                 startHeartbeat()
                 onProtocolReady?()
-                if wantsMic { enableMicPath() }
+                if userWantsMic { enableMicPath() }
             }
         }
     }
 }
+
