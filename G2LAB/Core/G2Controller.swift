@@ -29,7 +29,7 @@ final class G2Controller: ObservableObject {
         self.models = models
         wireTransport()
         wireWhisper()
-        log("G2 ACCESS v0.5.2 • native menu + downloadable Whisper")
+        log("G2 ACCESS v0.5.3 • native menu + downloadable Whisper")
     }
 
     deinit {

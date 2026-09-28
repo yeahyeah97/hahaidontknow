@@ -89,10 +89,11 @@ final class DirectG2Transport: NSObject {
             central = CBCentralManager(
                 delegate: self,
                 queue: nil,
-                options: [
-                    CBCentralManagerOptionShowPowerAlertKey: true,
-                    CBCentralManagerOptionRestoreIdentifierKey: "com.g2lab.access.central"
-                ]
+                // Do not pass CBCentralManagerOptionRestoreIdentifierKey here.
+                // On the user's iOS 27 build, CoreBluetooth aborts synchronously
+                // inside CBCentralManager.init when that option is present.
+                // Keep retrieval + system auto-reconnect, which do not require it.
+                options: [CBCentralManagerOptionShowPowerAlertKey: true]
             )
             return
         }
