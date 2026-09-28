@@ -88,8 +88,11 @@ final class G2Controller: ObservableObject {
         captionsEnabled = true
         menuVisible = false
         captionText = "Listening…"
+        // Keep the firmware display idle until Whisper has actual words.
+        // Initializing the caption surface at mic-start can surface the
+        // glasses' own "Even AI listening" screen instead of our transcript.
+        direct.cancelCaptionUpdates()
         direct.setMicEnabled(true)
-        direct.showCaption("Listening • \(models.selectedLanguageName)")
         log("CAPTIONS: START \(models.selectedModel.title) / \(models.selectedLanguageName)")
     }
 

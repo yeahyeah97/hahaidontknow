@@ -719,7 +719,6 @@ final class DirectG2Transport: NSObject {
         micOpenedForCurrentConnection = true
         micAckedForCurrentConnection = false
         lastMicPacketAt = CFAbsoluteTimeGetCurrent()
-        startMicStreamWatchdog()
         pendingEnterMessageIDs.removeAll()
         sendMicControl(status: 2)
         onLog?("MIC OPEN: CTRL ENTER queued L+R; awaiting audio")
@@ -730,8 +729,6 @@ final class DirectG2Transport: NSObject {
     private func disableMicPath() {
         micAckDeadline?.cancel()
         micAckDeadline = nil
-        micStreamWatchdog?.invalidate()
-        micStreamWatchdog = nil
         pendingEnterMessageIDs.removeAll()
         let canSendExit = micOpenedForCurrentConnection && isProtocolReady
         if canSendExit { sendMicControl(status: 3) }
@@ -754,22 +751,6 @@ final class DirectG2Transport: NSObject {
                 onLog?("MIC CTRL EXIT TX \(side.rawValue) msg=\(messageID)")
             }
             send(to: side, serviceHi: 0x07, serviceLo: 0x20, payload: payload)
-        }
-    }
-
-    private func startMicStreamWatchdog() {
-        micStreamWatchdog?.invalidate()
-        micStreamWatchdog = Timer.scheduledTimer(withTimeInterval: 0.50, repeats: true) { [weak self] _ in
-            guard let self, self.userWantsMic, self.isProtocolReady, self.micAvailable else { return }
-            let now = CFAbsoluteTimeGetCurrent()
-            guard now - self.lastMicPacketAt > 0.90,
-                  now - self.lastMicRearmAt > 1.75 else { return }
-            self.lastMicRearmAt = now
-            self.onLog?("MIC WATCHDOG: 6402 stalled — rearming ENTER without dropping BLE")
-            self.pendingEnterMessageIDs.removeAll()
-            self.micAckedForCurrentConnection = false
-            self.sendMicControl(status: 2)
-            self.armMicAckDeadline()
         }
     }
 
