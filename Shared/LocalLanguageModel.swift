@@ -6,13 +6,16 @@ final class LocalLanguageModel {
     private let defaults = UserDefaults.standard
     private let wordKey = "milazy.learned.wordFrequency.v1"
     private let bigramKey = "milazy.learned.bigramFrequency.v1"
+    private let correctionKey = "milazy.learned.correctionFrequency.v1"
 
     private var words: [String: Int]
     private var bigrams: [String: Int]
+    private var corrections: [String: Int]
 
     private init() {
         words = defaults.dictionary(forKey: wordKey) as? [String: Int] ?? [:]
         bigrams = defaults.dictionary(forKey: bigramKey) as? [String: Int] ?? [:]
+        corrections = defaults.dictionary(forKey: correctionKey) as? [String: Int] ?? [:]
     }
 
     private func normalized(_ value: String) -> String {
@@ -76,14 +79,48 @@ final class LocalLanguageModel {
         words[normalized(word), default: 0]
     }
 
+    func learnCorrection(from source: String, to replacement: String) {
+        let s = normalized(source)
+        let r = normalized(replacement)
+        guard !s.isEmpty, !r.isEmpty, s != r else { return }
+        let key = s + "\u{1F}" + r
+        corrections[key, default: 0] = min(corrections[key, default: 0] + 1, 50_000)
+        defaults.set(corrections, forKey: correctionKey)
+    }
+
+    func learnedCorrections(for source: String, limit: Int = 5) -> [(String, Int)] {
+        let prefix = normalized(source) + "\u{1F}"
+        return corrections.compactMap { key, count -> (String, Int)? in
+            guard key.hasPrefix(prefix) else { return nil }
+            return (String(key.dropFirst(prefix.count)), count)
+        }
+        .sorted { lhs, rhs in lhs.1 == rhs.1 ? lhs.0 < rhs.0 : lhs.1 > rhs.1 }
+        .prefix(limit)
+        .map { $0 }
+    }
+
+    func resetLearning() {
+        words.removeAll()
+        bigrams.removeAll()
+        corrections.removeAll()
+        defaults.removeObject(forKey: wordKey)
+        defaults.removeObject(forKey: bigramKey)
+        defaults.removeObject(forKey: correctionKey)
+    }
+
     private func trimIfNeeded() {
-        if words.count > 2500 {
-            let keep = words.sorted { $0.value > $1.value }.prefix(2000)
+        if words.count > 12000 {
+            let keep = words.sorted { $0.value > $1.value }.prefix(10000)
             words = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
         }
-        if bigrams.count > 5000 {
-            let keep = bigrams.sorted { $0.value > $1.value }.prefix(4000)
+        if bigrams.count > 24000 {
+            let keep = bigrams.sorted { $0.value > $1.value }.prefix(20000)
             bigrams = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+        if corrections.count > 8000 {
+            let keep = corrections.sorted { $0.value > $1.value }.prefix(6000)
+            corrections = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+            defaults.set(corrections, forKey: correctionKey)
         }
     }
 }
