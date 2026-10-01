@@ -19,6 +19,9 @@ enum AIAction {
             - Preserve the original language.
             - Preserve names, places, numbers, technical terms, slang, emojis, emotional tone, and concrete facts.
             - Recover the intended practical meaning, not the literal word order.
+            - Preserve who wants what to happen to whom. Actor/target relationships are more important than grammatical smoothness.
+            - Preserve whether an event is a fact, a hope, a fear, or a hypothetical. Never convert a hoped-for future defeat into "ha subito una sconfitta" unless the original clearly states it already happened.
+            - If two "spero"/"voglio"-like fragments refer to different people, keep them as two separate wishes when the semantic map supports that.
             - Turn implied questions into explicit natural questions.
             - Turn object-description fragments into identification questions when appropriate: e.g. "armadio porta arancione" may mean "Quale armadio? Quello con la porta arancione?"
             - Turn state/action fragments into the likely practical question when strongly supported: e.g. "porta chiusa" in an instructional context may mean "deve restare chiusa o va aperta?"
@@ -29,6 +32,11 @@ enum AIAction {
             - If the semantic map marks something uncertain, phrase that part conservatively.
             - Never mention the semantic map.
             - Output ONLY the reconstructed message, with no explanation and no quotation marks.
+
+            Example:
+            ORIGINAL: "Sicuramente Gian se spero sei forte spero zyki ha sconfitta va beneee"
+            INTENDED: "Sicuramente, Gian, spero che tu sia forte. E spero che Ziky perda... va beneee."
+            Important: this is two separate hopes. Do not rewrite it as "Ziky ha subito una sconfitta", because that changes a desired outcome into a past fact.
             """
 
         case .rewrite:
@@ -52,11 +60,19 @@ private extension AIAction {
         ENTITIES: people, places, objects, numbers, colors, technical terms, and other concrete references.
         IMPLICIT_QUESTIONS: questions that are probably intended even if question words or punctuation are missing.
         LINKS: how nearby fragments most likely relate to each other.
+        ACTOR_ROLES: for each named person/entity, what role they play in each clause or fragment.
+        DESIRE_SCOPE: who/what a word like "spero", "voglio", "vorrei", "deve", "può", "non voglio" applies to.
+        DESIRED_OUTCOME: what result the speaker wants or hopes for, and for which person/entity.
+        EVENT_STATUS: whether an event is stated as already happened, currently happening, hypothetical, feared, wished for, or expected.
+        POLARITY: whether the speaker wants a positive or negative outcome for each target; do not flip "X should win" into "X lost" or "Y should lose" into "Y has already lost".
         ACTION_OR_STATE: actions, choices, states, or instructions implied by fragments such as open/closed, inside/outside, this/that, where/which/how.
         UNCERTAINTY: fragments that cannot be resolved safely.
 
         Important:
         - Treat short noun clusters as possible compressed questions, not merely broken grammar.
+        - When a verb of hope/want/fear/desire appears more than once, test whether it introduces separate intentions for separate people or outcomes. Do not merge them automatically.
+        - Track semantic scope carefully. Example: "Gian spero sei forte ... spero Ziky sconfitta" most plausibly expresses two hopes: Gian is strong, and Ziky loses/is defeated. It must NOT be rewritten as if Ziky's defeat has already happened unless the text clearly says so.
+        - Distinguish event tense/status from desired outcome. Words like "sconfitta", "perde", "vince", "forte" can describe either a fact or a hoped-for result depending on the nearest desire/hope marker.
         - Use proximity and practical context to resolve references: an adjective/color after an object may identify which object; a state word may ask what to do with that object.
         - Treat everyday object labels as possibly approximate. For example, "armadio" together with "pacchi", "sportelli/porte", a color, and opening/closing may refer to a parcel locker rather than a literal wardrobe. Only make that inference when the surrounding words support it.
         - Reconstruct the smallest plausible chain of meaning.
