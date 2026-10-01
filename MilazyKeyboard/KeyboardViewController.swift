@@ -86,8 +86,8 @@ final class KeyboardViewController: UIInputViewController {
         root.addArrangedSubview(keyArea)
 
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 3),
-            root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -3),
+            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             root.topAnchor.constraint(equalTo: view.topAnchor),
             root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4)
         ])
@@ -100,7 +100,7 @@ final class KeyboardViewController: UIInputViewController {
         for (index, row) in rows.enumerated() {
             let stack = UIStackView()
             stack.axis = .horizontal
-            stack.spacing = 6.33
+            stack.spacing = 6
             stack.distribution = .fill
             stack.heightAnchor.constraint(equalToConstant: 45).isActive = true
 
@@ -116,9 +116,9 @@ final class KeyboardViewController: UIInputViewController {
                 } else {
                     addSpacer(6.67, to: stack)
                     addFixedKey("⇧", width: 50, action: #selector(toggleShift), to: stack)
-                    addSpacer(8.67, to: stack)
+                    addSpacer(14.67, to: stack)
                     row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
-                    addSpacer(8.67, to: stack)
+                    addSpacer(14.67, to: stack)
                     addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
                     addSpacer(6.67, to: stack)
                 }
@@ -129,9 +129,9 @@ final class KeyboardViewController: UIInputViewController {
             } else {
                 addSpacer(6.67, to: stack)
                 addFixedKey(page == .numbers ? "#+=" : "123", width: 50, action: #selector(toggleSymbols), to: stack)
-                addSpacer(8.67, to: stack)
+                addSpacer(14.67, to: stack)
                 row.forEach { addFixedKey($0, width: 50.67, action: #selector(characterKey(_:)), to: stack) }
-                addSpacer(8.67, to: stack)
+                addSpacer(14.67, to: stack)
                 addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
                 addSpacer(6.67, to: stack)
             }
@@ -140,7 +140,7 @@ final class KeyboardViewController: UIInputViewController {
 
         let bottom = UIStackView()
         bottom.axis = .horizontal
-        bottom.spacing = 6.33
+        bottom.spacing = 6
         bottom.distribution = .fill
         bottom.heightAnchor.constraint(equalToConstant: 45).isActive = true
         addSpacer(6.67, to: bottom)
@@ -181,8 +181,8 @@ final class KeyboardViewController: UIInputViewController {
 
     private func updateAppearance() {
         let dark = textDocumentProxy.keyboardAppearance == .dark || traitCollection.userInterfaceStyle == .dark
-        view.backgroundColor = dark ? UIColor(white: 0.11, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
-        predictionBar.backgroundColor = .clear
+        view.backgroundColor = dark ? UIColor(white: 31.0 / 255.0, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
+        predictionBar.backgroundColor = dark ? UIColor(white: 31.0 / 255.0, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
 
         for button in predictionButtons {
             button.setTitleColor(dark ? .white : .label, for: .normal)
