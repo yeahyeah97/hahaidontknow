@@ -544,6 +544,41 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         }
     }
 
+    private func bestImmediateCorrection(for source: String, context: String) -> String? {
+        guard source.count >= 2,
+              LocalLanguageModel.shared.frequency(of: source) <= 2 else { return nil }
+
+        if let learned = LocalLanguageModel.shared.learnedCorrections(for: source, limit: 1).first?.0 {
+            return matchCase(learned, source: source)
+        }
+
+        let primary = preferredLanguage(for: context)
+        let secondary = primary == "it_IT" ? "en_US" : "it_IT"
+        let checker = UITextChecker()
+        let ns = source as NSString
+        let range = NSRange(location: 0, length: ns.length)
+
+        func firstGuess(_ language: String) -> String? {
+            let misspelled = checker.rangeOfMisspelledWord(
+                in: source,
+                range: range,
+                startingAt: 0,
+                wrap: false,
+                language: language
+            )
+            guard misspelled.location != NSNotFound else { return nil }
+            return checker.guesses(forWordRange: misspelled, in: source, language: language)?.first
+        }
+
+        if let value = firstGuess(primary) {
+            return matchCase(value, source: source)
+        }
+        if let value = firstGuess(secondary) {
+            return matchCase(value, source: source)
+        }
+        return nil
+    }
+
     private func canInsertDoubleSpacePeriod(in context: String) -> Bool {
         guard context.hasSuffix(" ") else { return false }
         let beforeSpace = context.dropLast()
@@ -616,13 +651,20 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         let previous = previousWord(in: context)
         var committed = currentWord()
 
-        if let current = committed,
-           let correction = cachedCorrection,
-           correction.word.caseInsensitiveCompare(current) == .orderedSame,
-           correction.replacement.caseInsensitiveCompare(current) != .orderedSame {
-            replaceCurrentWord(with: correction.replacement)
-            LocalLanguageModel.shared.learnCorrection(from: current, to: correction.replacement)
-            committed = correction.replacement
+        if let current = committed {
+            let cached = cachedCorrection.flatMap { correction -> String? in
+                guard correction.word.caseInsensitiveCompare(current) == .orderedSame,
+                      correction.replacement.caseInsensitiveCompare(current) != .orderedSame else { return nil }
+                return correction.replacement
+            }
+            let replacement = cached ?? bestImmediateCorrection(for: current, context: context)
+
+            if let replacement,
+               replacement.caseInsensitiveCompare(current) != .orderedSame {
+                replaceCurrentWord(with: replacement)
+                LocalLanguageModel.shared.learnCorrection(from: current, to: replacement)
+                committed = replacement
+            }
         }
 
         if let committed {
@@ -637,6 +679,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         playKeyFeedback()
         lastSpaceTap = now
         shifted = false
+        DispatchQueue.main.async { [weak self] in
+            self?.syncAutoCapitalization()
+            self?.refreshLetterCaps()
+        }
         schedulePredictionRefresh()
     }
 
@@ -669,10 +715,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
                 button.setImage(UIImage(systemName: shifted ? "shift.fill" : "shift"), for: .normal)
                 continue
             }
-            guard let title = button.currentTitle,
-                  title.count == 1,
-                  title.rangeOfCharacter(from: .letters) != nil else { continue }
-            button.setTitle(shifted ? title.uppercased() : title.lowercased(), for: .normal)
+            guard let base = button.learningKey,
+                  base.count == 1,
+                  base.rangeOfCharacter(from: .letters) != nil else { continue }
+            button.setTitle(shifted ? base.uppercased() : base.lowercased(), for: .normal)
         }
     }
 
