@@ -1,10 +1,12 @@
 import UIKit
+import NaturalLanguage
 
 final class KeyboardViewController: UIInputViewController {
     private enum Page { case letters, numbers, symbols, emoji }
     fileprivate enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
 
     private let predictionBar = UIStackView()
+    private let aiButton = UIButton(type: .system)
     private let keyCanvas = KeyCanvasView()
     private var page: Page = .letters
     private var shifted = true
@@ -88,6 +90,16 @@ final class KeyboardViewController: UIInputViewController {
         let aiGesture = UILongPressGestureRecognizer(target: self, action: #selector(showAITools(_:)))
         predictionBar.addGestureRecognizer(aiGesture)
 
+        aiButton.translatesAutoresizingMaskIntoConstraints = false
+        aiButton.setImage(UIImage(systemName: "sparkles"), for: .normal)
+        aiButton.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold),
+            forImageIn: .normal
+        )
+        aiButton.addTarget(self, action: #selector(aiTapped), for: .touchUpInside)
+        aiButton.accessibilityLabel = "Milazy AI"
+        view.addSubview(aiButton)
+
         keyCanvas.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(keyCanvas)
 
@@ -96,6 +108,11 @@ final class KeyboardViewController: UIInputViewController {
             predictionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
             predictionBar.heightAnchor.constraint(equalToConstant: 35),
+
+            aiButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -3),
+            aiButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 1),
+            aiButton.widthAnchor.constraint(equalToConstant: 28),
+            aiButton.heightAnchor.constraint(equalToConstant: 28),
 
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -275,6 +292,7 @@ final class KeyboardViewController: UIInputViewController {
         for button in predictionButtons {
             button.setTitleColor(dark ? .white : .label, for: .normal)
         }
+        aiButton.tintColor = dark ? UIColor.white.withAlphaComponent(0.78) : UIColor.label.withAlphaComponent(0.72)
 
         let returnType = textDocumentProxy.returnKeyType
         let blueReturn = returnType != .default
@@ -429,10 +447,12 @@ final class KeyboardViewController: UIInputViewController {
 
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
         let previous = previousWord(in: context)
+        let primaryLanguage = preferredLanguage(for: context)
+        let secondaryLanguage = primaryLanguage == "it_IT" ? "en_US" : "it_IT"
 
         guard let word = currentWord(), !word.isEmpty else {
             let learned = LocalLanguageModel.shared.nextWords(after: previous, limit: 3)
-            let fallback = preferredLanguage(for: context) == "it_IT"
+            let fallback = primaryLanguage == "it_IT"
                 ? ["Ciao", "Non", "Io"]
                 : ["I", "The", "You"]
             var values = learned
@@ -446,7 +466,6 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        let language = preferredLanguage(for: context)
         let generation = predictionGeneration
         let sourceWord = word
         let learned = LocalLanguageModel.shared.completions(prefix: sourceWord, previous: previous, limit: 8)
@@ -455,22 +474,28 @@ final class KeyboardViewController: UIInputViewController {
             let checker = UITextChecker()
             let ns = sourceWord as NSString
             let range = NSRange(location: 0, length: ns.length)
-            let misspelled = checker.rangeOfMisspelledWord(
-                in: sourceWord,
-                range: range,
-                startingAt: 0,
-                wrap: false,
-                language: language
-            )
-            let guesses = misspelled.location != NSNotFound
-                ? (checker.guesses(forWordRange: misspelled, in: sourceWord, language: language) ?? [])
-                : []
-            let correction = guesses.first
-            let completions = checker.completions(
-                forPartialWordRange: range,
-                in: sourceWord,
-                language: language
-            ) ?? []
+
+            func languageCandidates(_ language: String) -> (String?, [String], [String]) {
+                let misspelled = checker.rangeOfMisspelledWord(
+                    in: sourceWord,
+                    range: range,
+                    startingAt: 0,
+                    wrap: false,
+                    language: language
+                )
+                let guesses = misspelled.location != NSNotFound
+                    ? (checker.guesses(forWordRange: misspelled, in: sourceWord, language: language) ?? [])
+                    : []
+                let completions = checker.completions(
+                    forPartialWordRange: range,
+                    in: sourceWord,
+                    language: language
+                ) ?? []
+                return (guesses.first, guesses, completions)
+            }
+
+            let primary = languageCandidates(primaryLanguage)
+            let secondary = languageCandidates(secondaryLanguage)
 
             var scores: [String: Int] = [:]
             var display: [String: String] = [:]
@@ -482,19 +507,22 @@ final class KeyboardViewController: UIInputViewController {
                 display[key] = self?.matchCase(value, source: sourceWord) ?? value
             }
 
+            // Personal vocabulary is strongest: if you use a word often, Milazy keeps it.
             for (index, value) in learned.enumerated() {
-                add(value, score: 1200 - index * 30 + LocalLanguageModel.shared.frequency(of: value) * 8)
+                add(value, score: 1500 - index * 30 + LocalLanguageModel.shared.frequency(of: value) * 10)
             }
-            if let correction {
-                add(correction, score: 1000)
-            }
-            add(sourceWord, score: 850 + LocalLanguageModel.shared.frequency(of: sourceWord) * 5)
-            for (index, value) in guesses.dropFirst().enumerated() {
-                add(value, score: 760 - index * 15)
-            }
-            for (index, value) in completions.enumerated() {
-                add(value, score: 700 - index * 10)
-            }
+
+            // Exact typed word gets a strong score once learned so names/slang are not "fixed" away.
+            let typedFrequency = LocalLanguageModel.shared.frequency(of: sourceWord)
+            add(sourceWord, score: 950 + typedFrequency * 25)
+
+            if let correction = primary.0 { add(correction, score: typedFrequency > 1 ? 900 : 1250) }
+            for (index, value) in primary.1.dropFirst().enumerated() { add(value, score: 1080 - index * 18) }
+            for (index, value) in primary.2.enumerated() { add(value, score: 1020 - index * 12) }
+
+            if let correction = secondary.0 { add(correction, score: 820) }
+            for (index, value) in secondary.1.dropFirst().enumerated() { add(value, score: 760 - index * 14) }
+            for (index, value) in secondary.2.enumerated() { add(value, score: 720 - index * 10) }
 
             let ranked = scores
                 .sorted { lhs, rhs in lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value > rhs.value }
@@ -508,16 +536,57 @@ final class KeyboardViewController: UIInputViewController {
                 guard let self,
                       self.predictionGeneration == generation,
                       self.currentWord() == sourceWord else { return }
-                self.cachedCorrection = correction.map { (sourceWord, $0) }
+
+                // Auto-correct only from the currently dominant language and never override
+                // words the user has already taught Milazy repeatedly.
+                if typedFrequency > 1 {
+                    self.cachedCorrection = nil
+                } else {
+                    self.cachedCorrection = primary.0.map { (sourceWord, $0) }
+                }
                 self.setPredictions(choices)
             }
         }
     }
 
     private func preferredLanguage(for text: String) -> String {
-        let lower = text.lowercased()
-        let italianHints = [" che ", " di ", " non ", " per ", " una ", " il ", " la ", " gli ", " sono ", " con "]
-        return italianHints.contains(where: lower.contains) ? "it_IT" : "en_US"
+        let tokens = words(in: text).map { $0.lowercased() }
+
+        let italian: Set<String> = [
+            "a","ad","al","alla","anche","ancora","bene","boh","ciao","che","chi","come",
+            "con","cosa","da","dai","dal","dalla","devo","di","dove","e","è","fa","fai",
+            "fare","fatto","gli","hai","ho","il","io","la","le","lo","ma","mi","mia","mio",
+            "ne","nel","nella","no","non","noi","ok","per","perché","più","poi","puoi","qua",
+            "qui","quindi","sei","si","sì","sono","sta","stai","sto","su","te","ti","tu",
+            "un","una","va","vai","voi","vorrei"
+        ]
+        let english: Set<String> = [
+            "a","about","all","also","am","and","are","as","at","be","because","but","can",
+            "come","do","for","from","go","good","have","he","hello","hey","how","i","if",
+            "in","is","it","just","like","me","my","no","not","of","ok","on","or","so",
+            "that","the","this","to","up","was","we","what","when","where","who","why",
+            "with","you","your"
+        ]
+
+        var itScore = 0
+        var enScore = 0
+        for token in tokens.suffix(8) {
+            if italian.contains(token) { itScore += token.count <= 2 ? 2 : 4 }
+            if english.contains(token) { enScore += token.count <= 2 ? 2 : 4 }
+            if token.range(of: "[àèéìòù]", options: .regularExpression) != nil { itScore += 5 }
+        }
+
+        let sample = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sample.count >= 8 {
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(sample)
+            if recognizer.dominantLanguage == .italian { itScore += 5 }
+            if recognizer.dominantLanguage == .english { enScore += 5 }
+        }
+
+        // Bilingual keyboard, but when the evidence is tied prefer Italian instead of
+        // always falling back to English. English takes over as soon as its evidence wins.
+        return itScore >= enScore ? "it_IT" : "en_US"
     }
 
     private func setPredictions(_ values: [String]) {
@@ -539,9 +608,16 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(replacement)
     }
 
+    @objc private func aiTapped() {
+        presentAIMenu()
+    }
+
     @objc private func showAITools(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
+        presentAIMenu()
+    }
 
+    private func presentAIMenu() {
         guard hasFullAccess else {
             showMessage(title: "Full Access Required", message: "Enable Allow Full Access for Milazy Keyboard in iOS Settings to use AI and clipboard features.")
             return
@@ -656,12 +732,19 @@ final class KeyCanvasView: UIView {
             return nil
         }
 
+        // Most important rule: if the finger is visibly inside a key, that key wins.
+        // Never redirect an in-key touch to a neighbour.
+        if let direct = super.hitTest(point, with: event) as? TouchKey {
+            return direct
+        }
+
         let keys = subviews.compactMap { $0 as? TouchKey }.filter {
             !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled
         }
 
+        // In the small gaps between caps, assign the touch to the nearest cap.
         let candidates = keys.filter { key in
-            key.frame.insetBy(dx: -7, dy: -6).contains(point)
+            key.frame.insetBy(dx: -6, dy: -5).contains(point)
         }
 
         guard !candidates.isEmpty else {
@@ -669,14 +752,11 @@ final class KeyCanvasView: UIView {
         }
 
         return candidates.min { lhs, rhs in
-            func score(_ key: TouchKey) -> CGFloat {
-                let dx = point.x - key.frame.midX
-                let dy = point.y - key.frame.midY
-                let nx = dx / max(key.frame.width, 1)
-                let ny = dy / max(key.frame.height, 1)
-                return nx * nx + 1.8 * ny * ny
-            }
-            return score(lhs) < score(rhs)
+            let ldx = point.x - lhs.frame.midX
+            let ldy = point.y - lhs.frame.midY
+            let rdx = point.x - rhs.frame.midX
+            let rdy = point.y - rhs.frame.midY
+            return ldx * ldx + 1.55 * ldy * ldy < rdx * rdx + 1.55 * rdy * rdy
         }
     }
 }
