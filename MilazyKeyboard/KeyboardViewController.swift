@@ -19,6 +19,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private var supplementaryEntries: [UILexiconEntry] = []
     private var backspaceTimer: Timer?
     private var lastSpaceTap: TimeInterval = 0
+    private let keyHaptic = UIImpactFeedbackGenerator(style: .light)
+    private var keyPreview: KeyPreviewView?
 
     var enableInputClicksWhenVisible: Bool { true }
 
@@ -50,6 +52,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         nativeHeight.priority = .required
         nativeHeight.isActive = true
         view.clipsToBounds = true
+        keyHaptic.prepare()
         buildChrome()
         rebuildKeys()
         updateAppearance()
@@ -262,6 +265,25 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         button.layer.cornerRadius = 8
         button.addTarget(self, action: action, for: .touchDown)
 
+        if role == .normal {
+            button.onFingerBegan = { [weak self] key, original in
+                self?.showPreview(for: key, text: original)
+            }
+            button.onFingerMoved = { [weak self] key, point, original in
+                guard let self else { return }
+                let resolved = self.resolvedNormalKey(at: point) ?? key
+                let display = self.destinationText(for: resolved, matchingCaseOf: original)
+                self.showPreview(for: resolved, text: display)
+            }
+            button.onFingerEnded = { [weak self] key, point, original in
+                self?.hidePreview()
+                self?.finalizeOptimisticTouch(from: key, point: point, insertedText: original)
+            }
+            button.onFingerCancelled = { [weak self] in
+                self?.hidePreview()
+            }
+        }
+
         if role == .delete {
             let hold = UILongPressGestureRecognizer(target: self, action: #selector(backspaceHold(_:)))
             hold.minimumPressDuration = 0.32
@@ -283,6 +305,91 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
         keyCanvas.addSubview(button)
         laidOutKeys.append((button, frame))
+    }
+
+    private func destinationText(for key: TouchKey, matchingCaseOf source: String) -> String {
+        guard var value = key.currentTitle ?? key.learningKey else { return source }
+        if source.first?.isUppercase == true {
+            value = value.uppercased()
+        } else if source.first?.isLowercase == true {
+            value = value.lowercased()
+        }
+        return value
+    }
+
+    private func resolvedNormalKey(at point: CGPoint) -> TouchKey? {
+        let keys = laidOutKeys.map { $0.0 }.filter {
+            $0.referenceRole == .normal && !$0.isHidden && $0.alpha > 0.01
+        }
+
+        if let direct = keys.first(where: { $0.frame.contains(point) }) {
+            return direct
+        }
+
+        let candidates = keys.filter { $0.frame.insetBy(dx: -7, dy: -6).contains(point) }
+        guard !candidates.isEmpty else { return nil }
+
+        return candidates.min { lhs, rhs in
+            let lc = lhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame) }
+                ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
+            let rc = rhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame) }
+                ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
+
+            let ldx = point.x - lc.x
+            let ldy = point.y - lc.y
+            let rdx = point.x - rc.x
+            let rdy = point.y - rc.y
+            return ldx * ldx + 1.55 * ldy * ldy < rdx * rdx + 1.55 * rdy * rdy
+        }
+    }
+
+    private func finalizeOptimisticTouch(from source: TouchKey, point: CGPoint, insertedText: String) {
+        guard source.referenceRole == .normal,
+              let destination = resolvedNormalKey(at: point),
+              destination !== source else {
+            return
+        }
+
+        let replacement = destinationText(for: destination, matchingCaseOf: insertedText)
+        guard replacement != insertedText else { return }
+
+        // The original key was already inserted on touch-down for minimum latency.
+        // Correct only the last character if the finger clearly finishes on another cap.
+        textDocumentProxy.deleteBackward()
+        textDocumentProxy.insertText(replacement)
+
+        if let key = destination.learningKey {
+            TouchLearningModel.shared.record(key: key, point: point, frame: destination.frame)
+        }
+
+        schedulePredictionRefresh()
+    }
+
+    private func showPreview(for key: TouchKey, text: String) {
+        guard page != .emoji else { return }
+
+        let preview: KeyPreviewView
+        if let existing = keyPreview {
+            preview = existing
+        } else {
+            preview = KeyPreviewView()
+            keyPreview = preview
+            view.addSubview(preview)
+        }
+
+        preview.text = text
+        let keyFrame = keyCanvas.convert(key.frame, to: view)
+        let width: CGFloat = 54
+        let height: CGFloat = 62
+        let x = min(max(keyFrame.midX - width / 2, 2), view.bounds.width - width - 2)
+        let y = max(1, keyFrame.minY - 30)
+        preview.frame = CGRect(x: x, y: y, width: width, height: height)
+        preview.isHidden = false
+        view.bringSubviewToFront(preview)
+    }
+
+    private func hidePreview() {
+        keyPreview?.isHidden = true
     }
 
     private func updateReturnKey() {
@@ -342,6 +449,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     private func playKeyFeedback() {
         UIDevice.current.playInputClick()
+        keyHaptic.impactOccurred(intensity: 0.32)
+        keyHaptic.prepare()
     }
 
     private func syncAutoCapitalization() {
@@ -919,14 +1028,19 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 final class TouchKey: UIButton {
     fileprivate var referenceRole: KeyboardViewController.KeyRole = .normal
     fileprivate var learningKey: String?
+    fileprivate var onFingerBegan: ((TouchKey, String) -> Void)?
+    fileprivate var onFingerMoved: ((TouchKey, CGPoint, String) -> Void)?
+    fileprivate var onFingerEnded: ((TouchKey, CGPoint, String) -> Void)?
+    fileprivate var onFingerCancelled: (() -> Void)?
+    private var touchStartText: String = ""
 
     override var isHighlighted: Bool {
         didSet {
             if isHighlighted {
-                transform = CGAffineTransform(scaleX: 0.975, y: 0.975)
-                alpha = 0.82
+                transform = CGAffineTransform(scaleX: 0.99, y: 0.99)
+                alpha = 0.86
             } else {
-                UIView.animate(withDuration: 0.055, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                UIView.animate(withDuration: 0.045, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
                     self.transform = .identity
                     self.alpha = 1
                 }
@@ -935,6 +1049,8 @@ final class TouchKey: UIButton {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchStartText = currentTitle ?? learningKey ?? ""
+
         if let key = learningKey,
            let touch = touches.first,
            let container = superview {
@@ -943,11 +1059,71 @@ final class TouchKey: UIButton {
                 TouchLearningModel.shared.record(key: key, point: point, frame: frame)
             }
         }
+
+        onFingerBegan?(self, touchStartText)
         super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let touch = touches.first, let container = superview {
+            onFingerMoved?(self, touch.location(in: container), touchStartText)
+        }
+        super.touchesMoved(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let touch = touches.first, let container = superview {
+            onFingerEnded?(self, touch.location(in: container), touchStartText)
+        } else {
+            onFingerCancelled?()
+        }
+        super.touchesEnded(touches, with: event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        onFingerCancelled?()
+        super.touchesCancelled(touches, with: event)
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.contains(point)
+    }
+}
+
+final class KeyPreviewView: UIView {
+    private let label = UILabel()
+
+    var text: String {
+        get { label.text ?? "" }
+        set { label.text = newValue }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = UIColor(white: 0.34, alpha: 1)
+        layer.cornerRadius = 10
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.22
+        layer.shadowRadius = 3
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+
+        label.font = .systemFont(ofSize: 28, weight: .regular)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            label.heightAnchor.constraint(equalToConstant: 35)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 
