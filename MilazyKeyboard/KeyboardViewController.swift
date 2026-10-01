@@ -7,6 +7,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     private let predictionBar = UIStackView()
     private let aiButton = UIButton(type: .system)
+    private let menuButton = UIButton(type: .system)
     private let keyCanvas = KeyCanvasView()
     private let aiPanel = UIView()
     private let aiStatusLabel = UILabel()
@@ -21,7 +22,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private var lastSpaceTap: TimeInterval = 0
     private let keyHaptic = UIImpactFeedbackGenerator(style: .light)
     private var keyPreview: KeyPreviewView?
-    private enum ToolPanel { case ai, clipboard, settings }
+    private enum ToolPanel { case ai, menu, clipboard, settings }
     private var toolPanel: ToolPanel = .ai
 
     var enableInputClicksWhenVisible: Bool { KeyboardPreferences.shared.sound }
@@ -97,6 +98,25 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func buildChrome() {
+        aiButton.translatesAutoresizingMaskIntoConstraints = false
+        aiButton.setTitle("AI", for: .normal)
+        aiButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
+        aiButton.layer.cornerRadius = 9
+        aiButton.addTarget(self, action: #selector(aiTapped), for: .touchUpInside)
+        aiButton.accessibilityLabel = "Deaf AI Fix"
+        view.addSubview(aiButton)
+
+        menuButton.translatesAutoresizingMaskIntoConstraints = false
+        menuButton.setImage(UIImage(systemName: "square.grid.2x2.fill"), for: .normal)
+        menuButton.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold),
+            forImageIn: .normal
+        )
+        menuButton.layer.cornerRadius = 9
+        menuButton.addTarget(self, action: #selector(menuTapped), for: .touchUpInside)
+        menuButton.accessibilityLabel = "Milazy tools"
+        view.addSubview(menuButton)
+
         predictionBar.axis = .horizontal
         predictionBar.distribution = .fillEqually
         predictionBar.spacing = 0
@@ -107,22 +127,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             let button = UIButton(type: .system)
             button.tag = index
             button.titleLabel?.font = .systemFont(ofSize: 17.5)
-            button.titleEdgeInsets = UIEdgeInsets(top: -9, left: 0, bottom: 9, right: 0)
             button.addTarget(self, action: #selector(usePrediction(_:)), for: .touchUpInside)
             predictionButtons.append(button)
             predictionBar.addArrangedSubview(button)
         }
-
-        let aiGesture = UILongPressGestureRecognizer(target: self, action: #selector(showAITools(_:)))
-        predictionBar.addGestureRecognizer(aiGesture)
-
-        aiButton.translatesAutoresizingMaskIntoConstraints = false
-        aiButton.setTitle("AI", for: .normal)
-        aiButton.titleLabel?.font = .systemFont(ofSize: 11, weight: .bold)
-        aiButton.layer.cornerRadius = 8
-        aiButton.addTarget(self, action: #selector(aiTapped), for: .touchUpInside)
-        aiButton.accessibilityLabel = "Deaf AI"
-        view.addSubview(aiButton)
 
         keyCanvas.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(keyCanvas)
@@ -131,20 +139,25 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         aiPanel.isHidden = true
         view.addSubview(aiPanel)
 
-        aiStatusLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        aiStatusLabel.font = .systemFont(ofSize: 13, weight: .medium)
         aiStatusLabel.textAlignment = .center
         aiStatusLabel.numberOfLines = 2
 
         NSLayoutConstraint.activate([
-            predictionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            predictionBar.trailingAnchor.constraint(equalTo: aiButton.leadingAnchor, constant: -4),
-            predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
-            predictionBar.heightAnchor.constraint(equalToConstant: 35),
-
-            aiButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+            aiButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
             aiButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
             aiButton.widthAnchor.constraint(equalToConstant: 38),
-            aiButton.heightAnchor.constraint(equalToConstant: 24),
+            aiButton.heightAnchor.constraint(equalToConstant: 27),
+
+            menuButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+            menuButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
+            menuButton.widthAnchor.constraint(equalToConstant: 38),
+            menuButton.heightAnchor.constraint(equalToConstant: 27),
+
+            predictionBar.leadingAnchor.constraint(equalTo: aiButton.trailingAnchor, constant: 4),
+            predictionBar.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -4),
+            predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
+            predictionBar.heightAnchor.constraint(equalToConstant: 35),
 
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -301,14 +314,15 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
         if role == .space && page == .letters {
             let badge = UILabel()
-            badge.text = "IT EN"
-            badge.font = .systemFont(ofSize: 11)
-            badge.textColor = UIColor.white.withAlphaComponent(0.38)
+            badge.text = "EN IT"
+            badge.font = .systemFont(ofSize: 12, weight: .medium)
+            badge.textColor = UIColor.white.withAlphaComponent(0.42)
+            badge.textAlignment = .center
             badge.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(badge)
             NSLayoutConstraint.activate([
-                badge.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -5),
-                badge.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
+                badge.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+                badge.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: -1)
             ])
         }
 
@@ -364,21 +378,13 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         }) else { return nil }
 
         return chosenRow.min { lhs, rhs in
-            let lc = lhs.learningKey.map {
-                TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame)
-            } ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
+            var lscore = lhs.learningKey.map {
+                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: lhs.frame)
+            } ?? hypot(point.x - lhs.frame.midX, point.y - lhs.frame.midY)
 
-            let rc = rhs.learningKey.map {
-                TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame)
-            } ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
-
-            let ldx = point.x - lc.x
-            let ldy = point.y - lc.y
-            let rdx = point.x - rc.x
-            let rdy = point.y - rc.y
-
-            var lscore = ldx * ldx + 0.22 * ldy * ldy
-            var rscore = rdx * rdx + 0.22 * rdy * rdy
+            var rscore = rhs.learningKey.map {
+                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: rhs.frame)
+            } ?? hypot(point.x - rhs.frame.midX, point.y - rhs.frame.midY)
 
             // Bigger invisible hitbox than the visible cap.
             // This deliberately overlaps neighboring caps a little.
@@ -492,8 +498,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         for button in predictionButtons {
             button.setTitleColor(dark ? .white : .label, for: .normal)
         }
-        aiButton.setTitleColor(dark ? .white : .label, for: .normal)
-        aiButton.backgroundColor = dark ? UIColor.white.withAlphaComponent(0.10) : UIColor.black.withAlphaComponent(0.08)
+        aiButton.setTitleColor(.white, for: .normal)
+        aiButton.backgroundColor = UIColor(red: 0.33, green: 0.20, blue: 0.56, alpha: 1)
+        menuButton.tintColor = dark ? .white : .label
+        menuButton.backgroundColor = dark ? UIColor.white.withAlphaComponent(0.10) : UIColor.black.withAlphaComponent(0.08)
         aiStatusLabel.textColor = dark ? UIColor.white.withAlphaComponent(0.86) : UIColor.label.withAlphaComponent(0.86)
         aiPanel.backgroundColor = .clear
 
@@ -1502,21 +1510,13 @@ final class KeyCanvasView: UIView {
         // merely because it landed one or two pixels inside a neighboring cap, score
         // all keys in the selected row and favor the user's learned landing center.
         return row.min { lhs, rhs in
-            let lc = lhs.learningKey.map {
-                TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame)
-            } ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
+            var lscore = lhs.learningKey.map {
+                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: lhs.frame)
+            } ?? hypot(point.x - lhs.frame.midX, point.y - lhs.frame.midY)
 
-            let rc = rhs.learningKey.map {
-                TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame)
-            } ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
-
-            let ldx = point.x - lc.x
-            let ldy = point.y - lc.y
-            let rdx = point.x - rc.x
-            let rdy = point.y - rc.y
-
-            var lscore = ldx * ldx + 0.22 * ldy * ldy
-            var rscore = rdx * rdx + 0.22 * rdy * rdy
+            var rscore = rhs.learningKey.map {
+                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: rhs.frame)
+            } ?? hypot(point.x - rhs.frame.midX, point.y - rhs.frame.midY)
 
             let hitbox = KeyboardPreferences.shared.hitboxMode
             if lhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY).contains(point) {
