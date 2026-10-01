@@ -1055,7 +1055,7 @@ final class TouchKey: UIButton {
            let touch = touches.first,
            let container = superview {
             let point = touch.location(in: container)
-            if frame.insetBy(dx: -3, dy: -3).contains(point) {
+            if frame.insetBy(dx: -14, dy: -9).contains(point) {
                 TouchLearningModel.shared.record(key: key, point: point, frame: frame)
             }
         }
@@ -1133,8 +1133,7 @@ final class KeyCanvasView: UIView {
             return nil
         }
 
-        // Most important rule: if the finger is visibly inside a key, that key wins.
-        // Never redirect an in-key touch to a neighbour.
+        // Exact visible-key hit always wins.
         if let direct = super.hitTest(point, with: event) as? TouchKey {
             return direct
         }
@@ -1142,27 +1141,54 @@ final class KeyCanvasView: UIView {
         let keys = subviews.compactMap { $0 as? TouchKey }.filter {
             !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled
         }
-
-        // In the small gaps between caps, assign the touch to the nearest cap.
-        let candidates = keys.filter { key in
-            key.frame.insetBy(dx: -6, dy: -5).contains(point)
-        }
-
-        guard !candidates.isEmpty else {
+        guard !keys.isEmpty else {
             return super.hitTest(point, with: event)
         }
 
-        return candidates.min { lhs, rhs in
-            let lc = lhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame) }
-                ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
-            let rc = rhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame) }
-                ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
+        // Build logical rows by their visual center. Each entire row becomes a continuous
+        // invisible touch band, so there are no dead horizontal gaps between caps.
+        let sorted = keys.sorted { $0.frame.midY < $1.frame.midY }
+        var rows: [[TouchKey]] = []
+
+        for key in sorted {
+            if let last = rows.last,
+               let anchor = last.first,
+               abs(anchor.frame.midY - key.frame.midY) < 12 {
+                rows[rows.count - 1].append(key)
+            } else {
+                rows.append([key])
+            }
+        }
+
+        // Pick the nearest row vertically. The 213pt key canvas contains only key rows/gaps,
+        // so even a tap in the vertical gutter is intentionally assigned to a row.
+        guard let row = rows.min(by: { lhs, rhs in
+            let ly = lhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(lhs.count)
+            let ry = rhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(rhs.count)
+            return abs(point.y - ly) < abs(point.y - ry)
+        }) else {
+            return super.hitTest(point, with: event)
+        }
+
+        // Within that row, use the user's learned landing centers. This creates large
+        // Voronoi-like hitboxes whose boundary sits halfway between neighboring keys.
+        return row.min { lhs, rhs in
+            let lc = lhs.learningKey.map {
+                TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame)
+            } ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
+
+            let rc = rhs.learningKey.map {
+                TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame)
+            } ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
 
             let ldx = point.x - lc.x
             let ldy = point.y - lc.y
             let rdx = point.x - rc.x
             let rdy = point.y - rc.y
-            return ldx * ldx + 1.55 * ldy * ldy < rdx * rdx + 1.55 * rdy * rdy
+
+            // Horizontal distance matters most inside a selected row.
+            return ldx * ldx + 0.35 * ldy * ldy < rdx * rdx + 0.35 * rdy * rdy
         }
     }
 }
+
