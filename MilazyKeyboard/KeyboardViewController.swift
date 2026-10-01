@@ -1189,6 +1189,25 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         }
     }
 
+    @objc private func closeTools() {
+        hideAIPanel()
+    }
+
+    @objc private func menuEmoji() {
+        hideAIPanel()
+        page = .emoji
+        rebuildKeys()
+        refreshPredictions()
+    }
+
+    @objc private func menuTranslate() {
+        if AIService.shared.hasAPIKey {
+            runAI(.translate)
+        } else {
+            showAIPanel()
+        }
+    }
+
     @objc private func openClipboardPanel() {
         toolPanel = .clipboard
         rebuildAIPanel()
