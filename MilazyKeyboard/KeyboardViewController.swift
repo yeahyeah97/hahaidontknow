@@ -30,6 +30,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        preferredContentSize = CGSize(width: 0, height: 347.0)
         build()
         rebuildKeys()
         updateAppearance()
@@ -51,7 +52,7 @@ final class KeyboardViewController: UIInputViewController {
         predictionBar.axis = .horizontal
         predictionBar.distribution = .fillEqually
         predictionBar.spacing = 0
-        predictionBar.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        predictionBar.heightAnchor.constraint(equalToConstant: 52).isActive = true
 
         for index in 0..<3 {
             let button = UIButton(type: .system)
@@ -78,8 +79,8 @@ final class KeyboardViewController: UIInputViewController {
         predictionBar.addGestureRecognizer(aiGesture)
 
         keyArea.axis = .vertical
-        keyArea.spacing = 7
-        keyArea.distribution = .fillEqually
+        keyArea.spacing = 11
+        keyArea.distribution = .fill
 
         root.addArrangedSubview(predictionBar)
         root.addArrangedSubview(keyArea)
@@ -99,52 +100,63 @@ final class KeyboardViewController: UIInputViewController {
         for (index, row) in rows.enumerated() {
             let stack = UIStackView()
             stack.axis = .horizontal
-            stack.spacing = 6
-            stack.distribution = .fillEqually
+            stack.spacing = 6.33
+            stack.distribution = .fill
+            stack.heightAnchor.constraint(equalToConstant: 45).isActive = true
 
-            if page == .letters && index == 2 {
-                let shift = makeKey(shifted ? "⇧" : "⇧", #selector(toggleShift))
-                shift.widthAnchor.constraint(equalToConstant: 43).isActive = true
-                stack.addArrangedSubview(shift)
-                addSpacer(3, to: stack)
-            } else if page != .letters && index == 2 {
-                let toggle = makeKey(page == .numbers ? "#+=" : "123", #selector(toggleSymbols))
-                toggle.widthAnchor.constraint(equalToConstant: 48).isActive = true
-                stack.addArrangedSubview(toggle)
-                addSpacer(3, to: stack)
+            if page == .letters {
+                if index == 0 {
+                    addSpacer(6.67, to: stack)
+                    row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
+                    addSpacer(6.67, to: stack)
+                } else if index == 1 {
+                    addSpacer(28, to: stack)
+                    row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
+                    addSpacer(28, to: stack)
+                } else {
+                    addSpacer(6.67, to: stack)
+                    addFixedKey("⇧", width: 50, action: #selector(toggleShift), to: stack)
+                    addSpacer(8.67, to: stack)
+                    row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
+                    addSpacer(8.67, to: stack)
+                    addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
+                    addSpacer(6.67, to: stack)
+                }
+            } else if index < 2 {
+                addSpacer(6.67, to: stack)
+                row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
+                addSpacer(6.67, to: stack)
+            } else {
+                addSpacer(6.67, to: stack)
+                addFixedKey(page == .numbers ? "#+=" : "123", width: 50, action: #selector(toggleSymbols), to: stack)
+                addSpacer(8.67, to: stack)
+                row.forEach { addFixedKey($0, width: 50.67, action: #selector(characterKey(_:)), to: stack) }
+                addSpacer(8.67, to: stack)
+                addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
+                addSpacer(6.67, to: stack)
             }
-
-            row.forEach { stack.addArrangedSubview(makeKey($0, #selector(characterKey(_:)))) }
-
-            if index == 2 {
-                addSpacer(3, to: stack)
-                let delete = makeKey("⌫", #selector(backspaceDown))
-                delete.widthAnchor.constraint(equalToConstant: 43).isActive = true
-                stack.addArrangedSubview(delete)
-            }
-
             keyArea.addArrangedSubview(stack)
         }
 
         let bottom = UIStackView()
         bottom.axis = .horizontal
-        bottom.spacing = 6
-
-        let mode = makeKey(page == .letters ? "123" : "ABC", #selector(toggleNumbers))
-        mode.widthAnchor.constraint(equalToConstant: 52).isActive = true
-
-        let emoji = makeKey("☺", #selector(emojiHint))
-        emoji.widthAnchor.constraint(equalToConstant: 42).isActive = true
-
-        let space = makeKey(page == .letters ? "Italiano e English" : "space", #selector(spaceDown))
-        space.titleLabel?.font = .systemFont(ofSize: 16)
-
-        let enter = makeKey("↵", #selector(returnDown))
-        enter.widthAnchor.constraint(equalToConstant: 82).isActive = true
-
-        [mode, emoji, space, enter].forEach { bottom.addArrangedSubview($0) }
+        bottom.spacing = 6.33
+        bottom.distribution = .fill
+        bottom.heightAnchor.constraint(equalToConstant: 45).isActive = true
+        addSpacer(6.67, to: bottom)
+        addFixedKey(page == .letters ? "123" : "ABC", width: 48, action: #selector(toggleNumbers), to: bottom)
+        addFixedKey("☺", width: 48, action: #selector(emojiHint), to: bottom)
+        addFixedKey(page == .letters ? "Italiano e English" : "space", width: 210.67, action: #selector(spaceDown), to: bottom)
+        addFixedKey("↵", width: 102.33, action: #selector(returnDown), to: bottom)
+        addSpacer(6.67, to: bottom)
         keyArea.addArrangedSubview(bottom)
         updateAppearance()
+    }
+
+    private func addFixedKey(_ title: String, width: CGFloat, action: Selector, to stack: UIStackView) {
+        let button = makeKey(title, action)
+        button.widthAnchor.constraint(equalToConstant: width).isActive = true
+        stack.addArrangedSubview(button)
     }
 
     private func addSpacer(_ width: CGFloat, to stack: UIStackView) {
