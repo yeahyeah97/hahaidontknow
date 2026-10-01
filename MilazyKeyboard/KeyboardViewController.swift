@@ -116,9 +116,9 @@ final class KeyboardViewController: UIInputViewController {
                 } else {
                     addSpacer(6.67, to: stack)
                     addFixedKey("⇧", width: 50, action: #selector(toggleShift), to: stack)
-                    addSpacer(14.67, to: stack)
+                    addSpacer(8.67, to: stack)
                     row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
-                    addSpacer(14.67, to: stack)
+                    addSpacer(8.67, to: stack)
                     addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
                     addSpacer(6.67, to: stack)
                 }
@@ -129,9 +129,9 @@ final class KeyboardViewController: UIInputViewController {
             } else {
                 addSpacer(6.67, to: stack)
                 addFixedKey(page == .numbers ? "#+=" : "123", width: 50, action: #selector(toggleSymbols), to: stack)
-                addSpacer(14.67, to: stack)
+                addSpacer(8.67, to: stack)
                 row.forEach { addFixedKey($0, width: 50.67, action: #selector(characterKey(_:)), to: stack) }
-                addSpacer(14.67, to: stack)
+                addSpacer(8.67, to: stack)
                 addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
                 addSpacer(6.67, to: stack)
             }
