@@ -50,7 +50,7 @@ final class SetupViewController: UIViewController, UITextFieldDelegate {
         title.textAlignment = .center
 
         let version = UILabel()
-        version.text = "3.0.0 · iOS Feel Engine"
+        version.text = "3.1.0 · Adaptive Touch Engine"
         version.font = .systemFont(ofSize: 14, weight: .semibold)
         version.textColor = UIColor.white.withAlphaComponent(0.58)
         version.textAlignment = .center
@@ -96,7 +96,7 @@ final class SetupViewController: UIViewController, UITextFieldDelegate {
 
         let tools = makeCard(
             title: "Keyboard Tools",
-            body: "Open AI → Settings inside the keyboard for language, layout, hitbox size, feedback, Tenor/GIPHY provider selection and remembered clipboard history.",
+            body: "Use the grid button inside the keyboard for Emoji, GIF, Clipboard, Translator, language, layout, hitbox and settings. Deaf AI Fix stays on the left of the prediction bar.",
             symbol: "slider.horizontal.3"
         )
         content.addArrangedSubview(wrapCard(tools))
