@@ -2,7 +2,7 @@ import UIKit
 
 final class KeyboardViewController: UIInputViewController {
     private enum Page { case letters, numbers, symbols, emoji }
-    private enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
+    fileprivate enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
 
     private let predictionBar = UIStackView()
     private let keyCanvas = UIView()
