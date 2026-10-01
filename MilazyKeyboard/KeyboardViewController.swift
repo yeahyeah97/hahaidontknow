@@ -8,6 +8,8 @@ final class KeyboardViewController: UIInputViewController {
     private let predictionBar = UIStackView()
     private let aiButton = UIButton(type: .system)
     private let keyCanvas = KeyCanvasView()
+    private let aiPanel = UIView()
+    private let aiStatusLabel = UILabel()
     private var page: Page = .letters
     private var shifted = true
     private var predictionButtons: [UIButton] = []
@@ -91,11 +93,9 @@ final class KeyboardViewController: UIInputViewController {
         predictionBar.addGestureRecognizer(aiGesture)
 
         aiButton.translatesAutoresizingMaskIntoConstraints = false
-        aiButton.setImage(UIImage(systemName: "sparkles"), for: .normal)
-        aiButton.setPreferredSymbolConfiguration(
-            UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold),
-            forImageIn: .normal
-        )
+        aiButton.setTitle("AI", for: .normal)
+        aiButton.titleLabel?.font = .systemFont(ofSize: 11, weight: .bold)
+        aiButton.layer.cornerRadius = 8
         aiButton.addTarget(self, action: #selector(aiTapped), for: .touchUpInside)
         aiButton.accessibilityLabel = "Milazy AI"
         view.addSubview(aiButton)
@@ -103,22 +103,35 @@ final class KeyboardViewController: UIInputViewController {
         keyCanvas.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(keyCanvas)
 
+        aiPanel.translatesAutoresizingMaskIntoConstraints = false
+        aiPanel.isHidden = true
+        view.addSubview(aiPanel)
+
+        aiStatusLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        aiStatusLabel.textAlignment = .center
+        aiStatusLabel.numberOfLines = 2
+
         NSLayoutConstraint.activate([
             predictionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             predictionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
             predictionBar.heightAnchor.constraint(equalToConstant: 35),
 
-            aiButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -3),
-            aiButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 1),
-            aiButton.widthAnchor.constraint(equalToConstant: 28),
-            aiButton.heightAnchor.constraint(equalToConstant: 28),
+            aiButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+            aiButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
+            aiButton.widthAnchor.constraint(equalToConstant: 30),
+            aiButton.heightAnchor.constraint(equalToConstant: 24),
 
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             keyCanvas.topAnchor.constraint(equalTo: predictionBar.bottomAnchor),
             keyCanvas.heightAnchor.constraint(equalToConstant: 213),
-            keyCanvas.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor)
+            keyCanvas.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
+
+            aiPanel.leadingAnchor.constraint(equalTo: keyCanvas.leadingAnchor),
+            aiPanel.trailingAnchor.constraint(equalTo: keyCanvas.trailingAnchor),
+            aiPanel.topAnchor.constraint(equalTo: keyCanvas.topAnchor),
+            aiPanel.bottomAnchor.constraint(equalTo: keyCanvas.bottomAnchor)
         ])
     }
 
@@ -292,7 +305,10 @@ final class KeyboardViewController: UIInputViewController {
         for button in predictionButtons {
             button.setTitleColor(dark ? .white : .label, for: .normal)
         }
-        aiButton.tintColor = dark ? UIColor.white.withAlphaComponent(0.78) : UIColor.label.withAlphaComponent(0.72)
+        aiButton.setTitleColor(dark ? .white : .label, for: .normal)
+        aiButton.backgroundColor = dark ? UIColor.white.withAlphaComponent(0.10) : UIColor.black.withAlphaComponent(0.08)
+        aiStatusLabel.textColor = dark ? UIColor.white.withAlphaComponent(0.86) : UIColor.label.withAlphaComponent(0.86)
+        aiPanel.backgroundColor = .clear
 
         let returnType = textDocumentProxy.returnKeyType
         let blueReturn = returnType != .default
@@ -609,102 +625,171 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func aiTapped() {
-        presentAIMenu()
+        showAIPanel()
     }
 
     @objc private func showAITools(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
-        presentAIMenu()
+        showAIPanel()
     }
 
-    private func presentAIMenu() {
-        guard hasFullAccess else {
-            showMessage(title: "Full Access Required", message: "Enable Allow Full Access for Milazy Keyboard in iOS Settings to use AI and clipboard features.")
+    private func showAIPanel() {
+        keyCanvas.isHidden = true
+        aiPanel.isHidden = false
+        rebuildAIPanel()
+    }
+
+    private func hideAIPanel() {
+        aiPanel.isHidden = true
+        keyCanvas.isHidden = false
+        aiStatusLabel.text = nil
+        refreshPredictions()
+    }
+
+    private func rebuildAIPanel() {
+        aiPanel.subviews.forEach { $0.removeFromSuperview() }
+
+        let title = UILabel()
+        title.text = "Milazy AI · Gemini"
+        title.font = .systemFont(ofSize: 18, weight: .semibold)
+        title.textAlignment = .center
+
+        let top = UIStackView(arrangedSubviews: [title, aiStatusLabel])
+        top.axis = .vertical
+        top.spacing = 4
+
+        let content = UIStackView()
+        content.axis = .vertical
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
+
+        aiPanel.addSubview(content)
+        content.addArrangedSubview(top)
+
+        if !hasFullAccess {
+            aiStatusLabel.text = "Enable Allow Full Access in iOS Settings to use Gemini AI."
+            content.addArrangedSubview(aiPanelButton("Back", action: #selector(aiBack)))
+        } else if !AIService.shared.hasAPIKey {
+            aiStatusLabel.text = "Copy your Gemini API key, then tap Paste Gemini Key."
+            content.addArrangedSubview(aiPanelButton("Paste Gemini Key", action: #selector(aiPasteKey)))
+            content.addArrangedSubview(aiPanelButton("Back", action: #selector(aiBack)))
+        } else {
+            aiStatusLabel.text = "AI only runs when you tap one of these actions."
+
+            let row1 = UIStackView(arrangedSubviews: [
+                aiPanelButton("Fix", action: #selector(aiFix)),
+                aiPanelButton("Rewrite", action: #selector(aiRewrite))
+            ])
+            row1.axis = .horizontal
+            row1.spacing = 8
+            row1.distribution = .fillEqually
+
+            let row2 = UIStackView(arrangedSubviews: [
+                aiPanelButton("Translate EN ↔ IT", action: #selector(aiTranslate)),
+                aiPanelButton("Tone", action: #selector(aiTone))
+            ])
+            row2.axis = .horizontal
+            row2.spacing = 8
+            row2.distribution = .fillEqually
+
+            let row3 = UIStackView(arrangedSubviews: [
+                aiPanelButton("Clipboard", action: #selector(aiClipboard)),
+                aiPanelButton("Change Key", action: #selector(aiChangeKey)),
+                aiPanelButton("Back", action: #selector(aiBack))
+            ])
+            row3.axis = .horizontal
+            row3.spacing = 8
+            row3.distribution = .fillEqually
+
+            content.addArrangedSubview(row1)
+            content.addArrangedSubview(row2)
+            content.addArrangedSubview(row3)
+        }
+
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: aiPanel.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: aiPanel.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: aiPanel.topAnchor, constant: 8)
+        ])
+        updateAppearance()
+    }
+
+    private func aiPanelButton(_ title: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        button.setTitleColor(.white, for: .normal)
+        button.backgroundColor = UIColor(white: 0.27, alpha: 1)
+        button.layer.cornerRadius = 8
+        button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        button.addTarget(self, action: action, for: .touchUpInside)
+        return button
+    }
+
+    @objc private func aiBack() {
+        hideAIPanel()
+    }
+
+    @objc private func aiPasteKey() {
+        guard let value = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            aiStatusLabel.text = "Clipboard is empty. Copy the Gemini API key first."
             return
         }
-
-        let sheet = UIAlertController(title: "Milazy AI", message: "AI never runs on normal keystrokes.", preferredStyle: .actionSheet)
-
-        if AIService.shared.hasAPIKey {
-            sheet.addAction(UIAlertAction(title: "Fix", style: .default) { _ in self.runAI(.fix) })
-            sheet.addAction(UIAlertAction(title: "Rewrite", style: .default) { _ in self.runAI(.rewrite) })
-            sheet.addAction(UIAlertAction(title: "Translate EN ↔ IT", style: .default) { _ in self.runAI(.translate) })
-            sheet.addAction(UIAlertAction(title: "Tone", style: .default) { _ in self.runAI(.tone) })
+        guard AIService.shared.saveAPIKey(value) else {
+            aiStatusLabel.text = "Could not save that key."
+            return
         }
-
-        sheet.addAction(UIAlertAction(
-            title: AIService.shared.hasAPIKey ? "Change Gemini API Key" : "Set Gemini API Key",
-            style: .default
-        ) { _ in
-            self.promptForAPIKey()
-        })
-
-        sheet.addAction(UIAlertAction(title: "Clipboard", style: .default) { _ in
-            if let value = UIPasteboard.general.string {
-                self.textDocumentProxy.insertText(value)
-            }
-        })
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(sheet, animated: true)
+        aiStatusLabel.text = "Gemini key saved."
+        rebuildAIPanel()
     }
 
-    private func promptForAPIKey() {
-        let alert = UIAlertController(
-            title: "Milazy AI",
-            message: "Paste your Gemini API key. It is stored only in this keyboard's iOS Keychain.",
-            preferredStyle: .alert
-        )
-        alert.addTextField { field in
-            field.placeholder = "sk-…"
-            field.isSecureTextEntry = true
-            field.autocapitalizationType = .none
-            field.autocorrectionType = .no
-        }
-        alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
-            guard let value = alert.textFields?.first?.text,
-                  AIService.shared.saveAPIKey(value) else {
-                self.showMessage(title: "Couldn't Save Key", message: "Enter a non-empty API key and try again.")
-                return
-            }
-            self.showMessage(title: "Milazy Gemini AI Ready", message: "Long-press the suggestion bar anytime for Fix, Rewrite, Translate, or Tone.")
-        })
-        if AIService.shared.hasAPIKey {
-            alert.addAction(UIAlertAction(title: "Remove Key", style: .destructive) { _ in
-                AIService.shared.clearAPIKey()
-            })
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+    @objc private func aiChangeKey() {
+        AIService.shared.clearAPIKey()
+        rebuildAIPanel()
     }
 
-    private func showMessage(title: String, message: String) {
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+    @objc private func aiClipboard() {
+        if let value = UIPasteboard.general.string {
+            textDocumentProxy.insertText(value)
+            hideAIPanel()
+        } else {
+            aiStatusLabel.text = "Clipboard is empty."
+        }
     }
+
+    @objc private func aiFix() { runAI(.fix) }
+    @objc private func aiRewrite() { runAI(.rewrite) }
+    @objc private func aiTranslate() { runAI(.translate) }
+    @objc private func aiTone() { runAI(.tone) }
 
     private func runAI(_ action: AIAction) {
         guard hasFullAccess else {
-            showMessage(title: "Full Access Required", message: "Enable Allow Full Access in iOS Settings first.")
+            aiStatusLabel.text = "Enable Allow Full Access in iOS Settings first."
             return
         }
         guard AIService.shared.hasAPIKey else {
-            promptForAPIKey()
+            aiStatusLabel.text = "Paste a Gemini API key first."
+            rebuildAIPanel()
             return
         }
 
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        guard !context.isEmpty else { return }
+        guard !context.isEmpty else {
+            aiStatusLabel.text = "Type something first."
+            return
+        }
 
-        let originalPredictions = predictionButtons.map { $0.currentTitle ?? "" }
-        setPredictions(["", "Thinking…", ""])
+        aiStatusLabel.text = "Thinking…"
+        setAIPanelControls(enabled: false)
 
         Task {
             let replacement = await AIService.shared.transform(context, action: action)
             await MainActor.run {
+                self.setAIPanelControls(enabled: true)
+
                 guard let replacement, !replacement.isEmpty else {
-                    self.setPredictions(originalPredictions)
-                    self.showMessage(title: "Gemini Request Failed", message: "Check Full Access, your API key, and your connection.")
+                    self.aiStatusLabel.text = "Gemini request failed. Check the API key and connection."
                     return
                 }
 
@@ -712,9 +797,21 @@ final class KeyboardViewController: UIInputViewController {
                     self.textDocumentProxy.deleteBackward()
                 }
                 self.textDocumentProxy.insertText(replacement)
+                self.hideAIPanel()
                 self.schedulePredictionRefresh()
             }
         }
+    }
+
+    private func setAIPanelControls(enabled: Bool) {
+        func visit(_ view: UIView) {
+            if let button = view as? UIButton {
+                button.isEnabled = enabled
+                button.alpha = enabled ? 1.0 : 0.45
+            }
+            view.subviews.forEach(visit)
+        }
+        visit(aiPanel)
     }
 }
 
