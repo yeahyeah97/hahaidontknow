@@ -11,55 +11,23 @@ enum AIAction {
         switch self {
         case .fix:
             return """
-            Reconstruct the intended meaning first, then rewrite the message naturally.
+            Rewrite the original fragmented message into the most likely natural message, using the supplied semantic map only as an interpretation aid.
 
-            The input may be fragmented, telegraphic, grammatically non-standard, missing articles/prepositions/verbs, or written in a compressed order where the logical links are only implied. Do NOT correct it word-by-word.
+            The ORIGINAL TEXT is always the source of truth. The SEMANTIC MAP is a hypothesis about its intent.
 
-            Work internally in this order:
-            1. Identify the concrete topic, people, objects, places, numbers, and actions mentioned.
-            2. Infer the practical intent: what is the person asking, explaining, requesting, confirming, or trying to do?
-            3. Reconstruct any implicit question/action chain. For example:
-               location -> which object -> which visual reference -> open/close? -> how do I use it?
-            4. Restore only strongly implied missing verbs, articles, prepositions, pronouns, and connectors.
-            5. Reorder the message into natural spoken/written language.
-            6. Keep ambiguity when the source is genuinely ambiguous instead of inventing facts.
-
-            Important behavior:
-            - Preserve the same language as the input unless the user explicitly asks to translate.
-            - Preserve names, usernames, places, numbers, technical terms, slang, emojis, emphasis, and emotional tone.
-            - Preserve the person's actual intent, not merely the literal word order.
-            - Prefer simple, direct language when the source itself is simple.
-            - If several fragments are actually separate implicit questions, write them as separate natural questions.
-            - Do not add facts, motives, people, dates, locations, or technical details that are not supported.
-            - Do not assume identity, disability, background, or intent beyond what the words/context support.
-            - If one fragment is unclear, choose the least-assumptive plausible reading and keep that uncertainty visible.
-            - Output ONLY the reconstructed message. No explanation, no analysis, no quotation marks.
-
-            Examples:
-
-            Input:
-            "Spiegare ssd come fare mettere dentro pc Lui 4 anni ssd 2TB montare dentro fatto mai"
-
-            Output:
-            "Spiegagli come montare l’SSD nel PC: ha un SSD da 2 TB da 4 anni e non l’ha mai montato."
-
-            Input:
-            "Sì non ho molta capacità leggere da dove inizio solo tipo Valleggia vicino Quiliano serve metti tipo colore arancione armadio porta e dentro chiusa ok come si usa cellulare non me ne intendo molto"
-
-            Output:
-            "Sì, faccio fatica a leggere e non so bene da dove iniziare. Mi basta una spiegazione semplice: dove si trova esattamente a Valleggia, vicino a Quiliano? Quale armadio devo cercare, quello con la porta arancione? E quella porta va aperta o deve restare chiusa? Spiegami anche come si usa con il cellulare, perché non me ne intendo molto."
-
-            Input:
-            "domani mamma ospedale io accompagnare poi lavoro tardi"
-
-            Output:
-            "Domani accompagno mia mamma in ospedale, poi andrò al lavoro più tardi."
-
-            Input:
-            "quale armadio porta arancione dentro chiusa"
-
-            Output:
-            "Quale armadio sarebbe? Quello con la porta arancione? E quella porta deve essere aperta o chiusa?"
+            Rules:
+            - Preserve the original language.
+            - Preserve names, places, numbers, technical terms, slang, emojis, emotional tone, and concrete facts.
+            - Recover the intended practical meaning, not the literal word order.
+            - Turn implied questions into explicit natural questions.
+            - Turn object-description fragments into identification questions when appropriate: e.g. "armadio porta arancione" may mean "Quale armadio? Quello con la porta arancione?"
+            - Turn state/action fragments into the likely practical question when strongly supported: e.g. "porta chiusa" in an instructional context may mean "deve restare chiusa o va aperta?"
+            - Keep separate intents separate instead of forcing everything into one long sentence.
+            - Prefer simple conversational language over formal language.
+            - Do not invent missing facts just to make the sentence smooth.
+            - If the semantic map marks something uncertain, phrase that part conservatively.
+            - Never mention the semantic map.
+            - Output ONLY the reconstructed message, with no explanation and no quotation marks.
             """
 
         case .rewrite:
@@ -71,6 +39,32 @@ enum AIAction {
         }
     }
 }
+
+private extension AIAction {
+    var semanticAnalysisInstruction: String {
+        """
+        Analyze the fragmented message before rewriting it. Do NOT produce the final polished sentence.
+
+        Build a compact semantic map with these fields:
+        INTENT: what the person is practically trying to ask, explain, confirm, request, or do.
+        TOPIC: the central subject.
+        ENTITIES: people, places, objects, numbers, colors, technical terms, and other concrete references.
+        IMPLICIT_QUESTIONS: questions that are probably intended even if question words or punctuation are missing.
+        LINKS: how nearby fragments most likely relate to each other.
+        ACTION_OR_STATE: actions, choices, states, or instructions implied by fragments such as open/closed, inside/outside, this/that, where/which/how.
+        UNCERTAINTY: fragments that cannot be resolved safely.
+
+        Important:
+        - Treat short noun clusters as possible compressed questions, not merely broken grammar.
+        - Use proximity and practical context to resolve references: an adjective/color after an object may identify which object; a state word may ask what to do with that object.
+        - Reconstruct the smallest plausible chain of meaning.
+        - Do not invent facts, identities, motives, locations, or actions unsupported by the text.
+        - Do not assume anything about the writer's disability, education, or background.
+        - Keep uncertainty explicit instead of guessing confidently.
+        - Be concise. This semantic map is for a second model pass, not for the user.
+        """
+    }
+
 
 final class AIService {
     static let shared = AIService()
@@ -140,6 +134,47 @@ final class AIService {
     func transform(_ text: String, action: AIAction) async -> String? {
         guard let key = apiKey else { return nil }
 
+        if action == .fix {
+            let map = await generate(
+                text: text,
+                instruction: action.semanticAnalysisInstruction,
+                apiKey: key,
+                maxOutputTokens: 420
+            )
+
+            if let map, !map.isEmpty {
+                let combined = """
+                ORIGINAL TEXT:
+                \(text)
+
+                SEMANTIC MAP:
+                \(map)
+                """
+                if let final = await generate(
+                    text: combined,
+                    instruction: action.instruction,
+                    apiKey: key,
+                    maxOutputTokens: 512
+                ) {
+                    return final
+                }
+            }
+        }
+
+        return await generate(
+            text: text,
+            instruction: action.instruction,
+            apiKey: key,
+            maxOutputTokens: 512
+        )
+    }
+
+    private func generate(
+        text: String,
+        instruction: String,
+        apiKey key: String,
+        maxOutputTokens: Int
+    ) async -> String? {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 20
@@ -149,7 +184,7 @@ final class AIService {
         let body: [String: Any] = [
             "systemInstruction": [
                 "parts": [
-                    ["text": action.instruction]
+                    ["text": instruction]
                 ]
             ],
             "contents": [
@@ -161,7 +196,7 @@ final class AIService {
                 ]
             ],
             "generationConfig": [
-                "maxOutputTokens": 512
+                "maxOutputTokens": maxOutputTokens
             ]
         ]
 
@@ -201,4 +236,5 @@ final class AIService {
             return nil
         }
     }
+
 }
