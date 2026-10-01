@@ -114,7 +114,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         )
         menuButton.layer.cornerRadius = 9
         menuButton.addTarget(self, action: #selector(menuTapped), for: .touchUpInside)
-        menuButton.accessibilityLabel = "Milazy tools"
+        menuButton.accessibilityLabel = "Tools"
         view.addSubview(menuButton)
 
         predictionBar.axis = .horizontal
