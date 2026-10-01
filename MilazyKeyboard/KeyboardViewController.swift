@@ -5,7 +5,7 @@ final class KeyboardViewController: UIInputViewController {
     fileprivate enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
 
     private let predictionBar = UIStackView()
-    private let keyCanvas = UIView()
+    private let keyCanvas = KeyCanvasView()
     private var page: Page = .letters
     private var shifted = true
     private var predictionButtons: [UIButton] = []
@@ -81,18 +81,6 @@ final class KeyboardViewController: UIInputViewController {
             button.titleLabel?.font = .systemFont(ofSize: 17.5)
             button.titleEdgeInsets = UIEdgeInsets(top: -9, left: 0, bottom: 9, right: 0)
             button.addTarget(self, action: #selector(usePrediction(_:)), for: .touchUpInside)
-            if index > 0 {
-                let separator = UIView()
-                separator.backgroundColor = UIColor.separator.withAlphaComponent(0.32)
-                separator.translatesAutoresizingMaskIntoConstraints = false
-                button.addSubview(separator)
-                NSLayoutConstraint.activate([
-                    separator.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-                    separator.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-                    separator.widthAnchor.constraint(equalToConstant: 0.5),
-                    separator.heightAnchor.constraint(equalToConstant: 49)
-                ])
-            }
             predictionButtons.append(button)
             predictionBar.addArrangedSubview(button)
         }
@@ -327,18 +315,32 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func spaceDown() {
-        if let current = currentWord(),
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let previous = previousWord(in: context)
+        var committed = currentWord()
+
+        if let current = committed,
            let correction = cachedCorrection,
            correction.word.caseInsensitiveCompare(current) == .orderedSame,
            correction.replacement.caseInsensitiveCompare(current) != .orderedSame {
             replaceCurrentWord(with: correction.replacement)
+            committed = correction.replacement
         }
+
+        if let committed {
+            LocalLanguageModel.shared.learn(word: committed, previous: previous)
+        }
+
         textDocumentProxy.insertText(" ")
         shifted = false
         schedulePredictionRefresh()
     }
 
     @objc private func returnDown() {
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        if let current = currentWord() {
+            LocalLanguageModel.shared.learn(word: current, previous: previousWord(in: context))
+        }
         textDocumentProxy.insertText("\n")
         shifted = true
         DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
@@ -397,6 +399,27 @@ final class KeyboardViewController: UIInputViewController {
         return context.components(separatedBy: separators).last.flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    private func words(in text: String) -> [String] {
+        let separators = CharacterSet.letters.union(.decimalDigits).inverted
+        return text.components(separatedBy: separators).filter { !$0.isEmpty }
+    }
+
+    private func previousWord(in context: String) -> String? {
+        let found = words(in: context)
+        guard !found.isEmpty else { return nil }
+        if let current = currentWord(),
+           found.last?.caseInsensitiveCompare(current) == .orderedSame,
+           found.count >= 2 {
+            return found[found.count - 2]
+        }
+        return found.last
+    }
+
+    private func matchCase(_ suggestion: String, source: String) -> String {
+        guard let first = source.first, first.isUppercase else { return suggestion }
+        return suggestion.prefix(1).uppercased() + suggestion.dropFirst()
+    }
+
     private func refreshPredictions() {
         guard page == .letters else {
             setPredictions(["", "", ""])
@@ -404,44 +427,89 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let previous = previousWord(in: context)
+
         guard let word = currentWord(), !word.isEmpty else {
-            setPredictions(["I", "The", "You"])
+            let learned = LocalLanguageModel.shared.nextWords(after: previous, limit: 3)
+            let fallback = preferredLanguage(for: context) == "it_IT"
+                ? ["Ciao", "Non", "Io"]
+                : ["I", "The", "You"]
+            var values = learned
+            for item in fallback where !values.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
+                values.append(item)
+                if values.count == 3 { break }
+            }
+            while values.count < 3 { values.append("") }
+            setPredictions(Array(values.prefix(3)))
             cachedCorrection = nil
             return
         }
 
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
         let language = preferredLanguage(for: context)
         let generation = predictionGeneration
         let sourceWord = word
+        let learned = LocalLanguageModel.shared.completions(prefix: sourceWord, previous: previous, limit: 8)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let checker = UITextChecker()
             let ns = sourceWord as NSString
             let range = NSRange(location: 0, length: ns.length)
-            let misspelled = checker.rangeOfMisspelledWord(in: sourceWord, range: range, startingAt: 0, wrap: false, language: language)
+            let misspelled = checker.rangeOfMisspelledWord(
+                in: sourceWord,
+                range: range,
+                startingAt: 0,
+                wrap: false,
+                language: language
+            )
             let guesses = misspelled.location != NSNotFound
                 ? (checker.guesses(forWordRange: misspelled, in: sourceWord, language: language) ?? [])
                 : []
             let correction = guesses.first
-            let completions = checker.completions(forPartialWordRange: range, in: sourceWord, language: language) ?? []
+            let completions = checker.completions(
+                forPartialWordRange: range,
+                in: sourceWord,
+                language: language
+            ) ?? []
 
-            var choices: [String] = []
-            if let correction, correction.caseInsensitiveCompare(sourceWord) != .orderedSame {
-                choices.append(correction)
+            var scores: [String: Int] = [:]
+            var display: [String: String] = [:]
+
+            func add(_ value: String, score: Int) {
+                guard !value.isEmpty else { return }
+                let key = value.lowercased()
+                scores[key] = max(scores[key, default: Int.min], score)
+                display[key] = self?.matchCase(value, source: sourceWord) ?? value
             }
-            choices.append(sourceWord)
-            for item in (guesses.dropFirst() + completions)
-            where !choices.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
-                choices.append(item)
-                if choices.count == 3 { break }
+
+            for (index, value) in learned.enumerated() {
+                add(value, score: 1200 - index * 30 + LocalLanguageModel.shared.frequency(of: value) * 8)
             }
+            if let correction {
+                add(correction, score: 1000)
+            }
+            add(sourceWord, score: 850 + LocalLanguageModel.shared.frequency(of: sourceWord) * 5)
+            for (index, value) in guesses.dropFirst().enumerated() {
+                add(value, score: 760 - index * 15)
+            }
+            for (index, value) in completions.enumerated() {
+                add(value, score: 700 - index * 10)
+            }
+
+            let ranked = scores
+                .sorted { lhs, rhs in lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value > rhs.value }
+                .prefix(3)
+                .compactMap { display[$0.key] }
+
+            var choices = Array(ranked)
             while choices.count < 3 { choices.append("") }
 
             DispatchQueue.main.async {
-                guard let self, self.predictionGeneration == generation, self.currentWord() == sourceWord else { return }
+                guard let self,
+                      self.predictionGeneration == generation,
+                      self.currentWord() == sourceWord else { return }
                 self.cachedCorrection = correction.map { (sourceWord, $0) }
-                self.setPredictions(Array(choices.prefix(3)))
+                self.setPredictions(choices)
             }
         }
     }
@@ -473,26 +541,100 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func showAITools(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
-        let sheet = UIAlertController(title: "Milazy AI", message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Fix", style: .default) { _ in self.runAI(.fix) })
-        sheet.addAction(UIAlertAction(title: "Rewrite", style: .default) { _ in self.runAI(.rewrite) })
-        sheet.addAction(UIAlertAction(title: "Translate", style: .default) { _ in self.runAI(.translate) })
-        sheet.addAction(UIAlertAction(title: "Tone", style: .default) { _ in self.runAI(.tone) })
+
+        guard hasFullAccess else {
+            showMessage(title: "Full Access Required", message: "Enable Allow Full Access for Milazy Keyboard in iOS Settings to use AI and clipboard features.")
+            return
+        }
+
+        let sheet = UIAlertController(title: "Milazy AI", message: "AI never runs on normal keystrokes.", preferredStyle: .actionSheet)
+
+        if AIService.shared.hasAPIKey {
+            sheet.addAction(UIAlertAction(title: "Fix", style: .default) { _ in self.runAI(.fix) })
+            sheet.addAction(UIAlertAction(title: "Rewrite", style: .default) { _ in self.runAI(.rewrite) })
+            sheet.addAction(UIAlertAction(title: "Translate EN ↔ IT", style: .default) { _ in self.runAI(.translate) })
+            sheet.addAction(UIAlertAction(title: "Tone", style: .default) { _ in self.runAI(.tone) })
+        }
+
+        sheet.addAction(UIAlertAction(
+            title: AIService.shared.hasAPIKey ? "Change AI API Key" : "Set AI API Key",
+            style: .default
+        ) { _ in
+            self.promptForAPIKey()
+        })
+
         sheet.addAction(UIAlertAction(title: "Clipboard", style: .default) { _ in
-            if let value = UIPasteboard.general.string { self.textDocumentProxy.insertText(value) }
+            if let value = UIPasteboard.general.string {
+                self.textDocumentProxy.insertText(value)
+            }
         })
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         present(sheet, animated: true)
     }
 
+    private func promptForAPIKey() {
+        let alert = UIAlertController(
+            title: "Milazy AI",
+            message: "Paste your OpenAI API key. It is stored only in this keyboard's iOS Keychain.",
+            preferredStyle: .alert
+        )
+        alert.addTextField { field in
+            field.placeholder = "sk-…"
+            field.isSecureTextEntry = true
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
+            guard let value = alert.textFields?.first?.text,
+                  AIService.shared.saveAPIKey(value) else {
+                self.showMessage(title: "Couldn't Save Key", message: "Enter a non-empty API key and try again.")
+                return
+            }
+            self.showMessage(title: "Milazy AI Ready", message: "Long-press the suggestion bar anytime for Fix, Rewrite, Translate, or Tone.")
+        })
+        if AIService.shared.hasAPIKey {
+            alert.addAction(UIAlertAction(title: "Remove Key", style: .destructive) { _ in
+                AIService.shared.clearAPIKey()
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func showMessage(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     private func runAI(_ action: AIAction) {
-        guard hasFullAccess else { return }
+        guard hasFullAccess else {
+            showMessage(title: "Full Access Required", message: "Enable Allow Full Access in iOS Settings first.")
+            return
+        }
+        guard AIService.shared.hasAPIKey else {
+            promptForAPIKey()
+            return
+        }
+
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
         guard !context.isEmpty else { return }
+
+        let originalPredictions = predictionButtons.map { $0.currentTitle ?? "" }
+        setPredictions(["", "Thinking…", ""])
+
         Task {
-            guard let replacement = await AIService.shared.transform(context, action: action) else { return }
+            let replacement = await AIService.shared.transform(context, action: action)
             await MainActor.run {
-                for _ in context { self.textDocumentProxy.deleteBackward() }
+                guard let replacement, !replacement.isEmpty else {
+                    self.setPredictions(originalPredictions)
+                    self.showMessage(title: "AI Request Failed", message: "Check Full Access, your API key, and your connection.")
+                    return
+                }
+
+                for _ in context {
+                    self.textDocumentProxy.deleteBackward()
+                }
                 self.textDocumentProxy.insertText(replacement)
                 self.schedulePredictionRefresh()
             }
@@ -504,6 +646,37 @@ final class TouchKey: UIButton {
     fileprivate var referenceRole: KeyboardViewController.KeyRole = .normal
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.insetBy(dx: -3, dy: -4).contains(point)
+        bounds.contains(point)
+    }
+}
+
+final class KeyCanvasView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, alpha > 0.01, isUserInteractionEnabled, bounds.contains(point) else {
+            return nil
+        }
+
+        let keys = subviews.compactMap { $0 as? TouchKey }.filter {
+            !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled
+        }
+
+        let candidates = keys.filter { key in
+            key.frame.insetBy(dx: -7, dy: -6).contains(point)
+        }
+
+        guard !candidates.isEmpty else {
+            return super.hitTest(point, with: event)
+        }
+
+        return candidates.min { lhs, rhs in
+            func score(_ key: TouchKey) -> CGFloat {
+                let dx = point.x - key.frame.midX
+                let dy = point.y - key.frame.midY
+                let nx = dx / max(key.frame.width, 1)
+                let ny = dy / max(key.frame.height, 1)
+                return nx * nx + 1.8 * ny * ny
+            }
+            return score(lhs) < score(rhs)
+        }
     }
 }
