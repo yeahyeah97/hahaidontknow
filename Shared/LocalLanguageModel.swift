@@ -79,11 +79,11 @@ final class LocalLanguageModel {
     private func trimIfNeeded() {
         if words.count > 2500 {
             let keep = words.sorted { $0.value > $1.value }.prefix(2000)
-            words = Dictionary(uniqueKeysWithValues: keep)
+            words = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
         }
         if bigrams.count > 5000 {
             let keep = bigrams.sorted { $0.value > $1.value }.prefix(4000)
-            bigrams = Dictionary(uniqueKeysWithValues: keep)
+            bigrams = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
         }
     }
 }
