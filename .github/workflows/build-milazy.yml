@@ -1,0 +1,41 @@
+name: Build Milazy Keyboard IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild -project MilazyKeyboard.xcodeproj \
+            -scheme MilazyKeyboard \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/MilazyDerived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee "$RUNNER_TEMP/xcodebuild.log"
+      - name: Package IPA
+        run: |
+          APP="$RUNNER_TEMP/MilazyDerived/Build/Products/Release-iphoneos/MilazyKeyboard.app"
+          test -d "$APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry MilazyKeyboard_V1_unsigned.ipa Payload
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MilazyKeyboard_V1_unsigned
+          path: MilazyKeyboard_V1_unsigned.ipa
+          if-no-files-found: error
