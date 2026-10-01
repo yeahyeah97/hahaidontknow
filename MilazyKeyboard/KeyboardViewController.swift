@@ -457,7 +457,7 @@ final class KeyboardViewController: UIInputViewController {
 }
 
 final class TouchKey: UIButton {
-    var referenceRole: KeyboardViewController.KeyRole = .normal
+    fileprivate var referenceRole: KeyboardViewController.KeyRole = .normal
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: -3, dy: -4).contains(point)
