@@ -633,7 +633,7 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         sheet.addAction(UIAlertAction(
-            title: AIService.shared.hasAPIKey ? "Change AI API Key" : "Set AI API Key",
+            title: AIService.shared.hasAPIKey ? "Change Gemini API Key" : "Set Gemini API Key",
             style: .default
         ) { _ in
             self.promptForAPIKey()
@@ -651,7 +651,7 @@ final class KeyboardViewController: UIInputViewController {
     private func promptForAPIKey() {
         let alert = UIAlertController(
             title: "Milazy AI",
-            message: "Paste your OpenAI API key. It is stored only in this keyboard's iOS Keychain.",
+            message: "Paste your Gemini API key. It is stored only in this keyboard's iOS Keychain.",
             preferredStyle: .alert
         )
         alert.addTextField { field in
@@ -666,7 +666,7 @@ final class KeyboardViewController: UIInputViewController {
                 self.showMessage(title: "Couldn't Save Key", message: "Enter a non-empty API key and try again.")
                 return
             }
-            self.showMessage(title: "Milazy AI Ready", message: "Long-press the suggestion bar anytime for Fix, Rewrite, Translate, or Tone.")
+            self.showMessage(title: "Milazy Gemini AI Ready", message: "Long-press the suggestion bar anytime for Fix, Rewrite, Translate, or Tone.")
         })
         if AIService.shared.hasAPIKey {
             alert.addAction(UIAlertAction(title: "Remove Key", style: .destructive) { _ in
@@ -704,7 +704,7 @@ final class KeyboardViewController: UIInputViewController {
             await MainActor.run {
                 guard let replacement, !replacement.isEmpty else {
                     self.setPredictions(originalPredictions)
-                    self.showMessage(title: "AI Request Failed", message: "Check Full Access, your API key, and your connection.")
+                    self.showMessage(title: "Gemini Request Failed", message: "Check Full Access, your API key, and your connection.")
                     return
                 }
 
