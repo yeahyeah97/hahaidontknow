@@ -36,7 +36,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        preferredContentSize = CGSize(width: 0, height: 330)
+        preferredContentSize = CGSize(width: 0, height: 347)
         view.clipsToBounds = false
         buildChrome()
         rebuildKeys()
@@ -46,7 +46,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let referenceWidth: CGFloat = 428
+        let referenceWidth: CGFloat = 440
         let sx = keyCanvas.bounds.width / referenceWidth
         for (button, reference) in laidOutKeys {
             button.frame = CGRect(
@@ -103,11 +103,11 @@ final class KeyboardViewController: UIInputViewController {
             predictionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             predictionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
-            predictionBar.heightAnchor.constraint(equalToConstant: 56),
+            predictionBar.heightAnchor.constraint(equalToConstant: 35),
 
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyCanvas.topAnchor.constraint(equalTo: view.topAnchor, constant: 76.33),
+            keyCanvas.topAnchor.constraint(equalTo: view.topAnchor, constant: 35),
             keyCanvas.heightAnchor.constraint(equalToConstant: 213)
         ])
     }
@@ -137,18 +137,18 @@ final class KeyboardViewController: UIInputViewController {
         let step: CGFloat = 43.33
 
         for (i, title) in letterRows[0].enumerated() {
-            addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: 0, width: normalW, height: keyH), #selector(characterKey(_:)))
+            addKey(title, CGRect(x: 6.67 + CGFloat(i) * step, y: 0, width: normalW, height: keyH), #selector(characterKey(_:)))
         }
 
         for (i, title) in letterRows[1].enumerated() {
-            addKey(title, CGRect(x: 22 + CGFloat(i) * step, y: 56, width: normalW, height: keyH), #selector(characterKey(_:)))
+            addKey(title, CGRect(x: 28 + CGFloat(i) * step, y: 56, width: normalW, height: keyH), #selector(characterKey(_:)))
         }
 
-        addKey("⇧", CGRect(x: 0.67, y: 112, width: 50, height: keyH), #selector(toggleShift), role: .shift)
+        addKey("⇧", CGRect(x: 6.67, y: 112, width: 50, height: keyH), #selector(toggleShift), role: .shift)
         for (i, title) in letterRows[2].enumerated() {
-            addKey(title, CGRect(x: 65.33 + CGFloat(i) * step, y: 112, width: normalW, height: keyH), #selector(characterKey(_:)))
+            addKey(title, CGRect(x: 71.33 + CGFloat(i) * step, y: 112, width: normalW, height: keyH), #selector(characterKey(_:)))
         }
-        addKey("⌫", CGRect(x: 377.33, y: 112, width: 50.33, height: keyH), #selector(backspaceDown), role: .delete)
+        addKey("⌫", CGRect(x: 383.33, y: 112, width: 50.33, height: keyH), #selector(backspaceDown), role: .delete)
 
         buildBottomRow(modeTitle: "123", spaceTitle: "")
     }
@@ -160,19 +160,19 @@ final class KeyboardViewController: UIInputViewController {
         let step: CGFloat = 43.33
 
         for (i, title) in rows[0].enumerated() {
-            addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: 0, width: normalW, height: keyH), #selector(characterKey(_:)))
+            addKey(title, CGRect(x: 6.67 + CGFloat(i) * step, y: 0, width: normalW, height: keyH), #selector(characterKey(_:)))
         }
         for (i, title) in rows[1].enumerated() {
-            addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: 56, width: normalW, height: keyH), #selector(characterKey(_:)))
+            addKey(title, CGRect(x: 6.67 + CGFloat(i) * step, y: 56, width: normalW, height: keyH), #selector(characterKey(_:)))
         }
 
-        addKey(symbols ? "123" : "#+=", CGRect(x: 0.67, y: 112, width: 50, height: keyH), #selector(toggleSymbols), role: .mode)
+        addKey(symbols ? "123" : "#+=", CGRect(x: 6.67, y: 112, width: 50, height: keyH), #selector(toggleSymbols), role: .mode)
         let punctuationW: CGFloat = 54.67
-        let punctuationX: [CGFloat] = [65.33, 126, 186.67, 247.33, 308]
+        let punctuationX: [CGFloat] = [71.33, 132, 192.67, 253.33, 314]
         for (i, title) in rows[2].enumerated() {
             addKey(title, CGRect(x: punctuationX[i], y: 112, width: punctuationW, height: keyH), #selector(characterKey(_:)))
         }
-        addKey("⌫", CGRect(x: 377.33, y: 112, width: 50.33, height: keyH), #selector(backspaceDown), role: .delete)
+        addKey("⌫", CGRect(x: 383.33, y: 112, width: 50.33, height: keyH), #selector(backspaceDown), role: .delete)
 
         buildBottomRow(modeTitle: "ABC", spaceTitle: "space")
     }
@@ -184,7 +184,7 @@ final class KeyboardViewController: UIInputViewController {
 
         for row in 0..<3 {
             for (i, title) in emojiRows[row].enumerated() {
-                addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: CGFloat(row) * 56, width: normalW, height: keyH), #selector(characterKey(_:)))
+                addKey(title, CGRect(x: 6.67 + CGFloat(i) * step, y: CGFloat(row) * 56, width: normalW, height: keyH), #selector(characterKey(_:)))
             }
         }
         buildBottomRow(modeTitle: "ABC", spaceTitle: "space")
@@ -193,10 +193,10 @@ final class KeyboardViewController: UIInputViewController {
     private func buildBottomRow(modeTitle: String, spaceTitle: String) {
         let y: CGFloat = 168
         let h: CGFloat = 45
-        addKey(modeTitle, CGRect(x: 0.67, y: y, width: 48, height: h), #selector(toggleNumbers), role: .mode)
-        addKey("☺", CGRect(x: 54.67, y: y, width: 48, height: h), #selector(emojiDown), role: .emoji)
-        addKey(spaceTitle, CGRect(x: 108.67, y: y, width: 210.67, height: h), #selector(spaceDown), role: .space)
-        addKey("↵", CGRect(x: 325.33, y: y, width: 102.33, height: h), #selector(returnDown), role: .returnKey)
+        addKey(modeTitle, CGRect(x: 6.67, y: y, width: 48, height: h), #selector(toggleNumbers), role: .mode)
+        addKey("☺", CGRect(x: 60.67, y: y, width: 48, height: h), #selector(emojiDown), role: .emoji)
+        addKey(spaceTitle, CGRect(x: 114.67, y: y, width: 210.67, height: h), #selector(spaceDown), role: .space)
+        addKey("↵", CGRect(x: 331.33, y: y, width: 102.33, height: h), #selector(returnDown), role: .returnKey)
     }
 
     private func addKey(_ title: String, _ frame: CGRect, _ action: Selector, role: KeyRole = .normal) {
@@ -282,6 +282,7 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(value)
         if page == .letters && shifted {
             shifted = false
+            DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
         }
         schedulePredictionRefresh()
     }
@@ -313,11 +314,23 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func returnDown() {
         textDocumentProxy.insertText("\n")
         shifted = true
+        DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
         schedulePredictionRefresh()
     }
 
     @objc private func toggleShift() {
         shifted.toggle()
+        refreshLetterCaps()
+    }
+
+    private func refreshLetterCaps() {
+        guard page == .letters else { return }
+        for (button, _) in laidOutKeys {
+            guard let title = button.currentTitle,
+                  title.count == 1,
+                  title.rangeOfCharacter(from: .letters) != nil else { continue }
+            button.setTitle(shifted ? title.uppercased() : title.lowercased(), for: .normal)
+        }
     }
 
     @objc private func toggleNumbers() {
