@@ -382,10 +382,11 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
             // Bigger invisible hitbox than the visible cap.
             // This deliberately overlaps neighboring caps a little.
-            let lComfort = lhs.frame.insetBy(dx: -8.5, dy: -9.0)
-            let rComfort = rhs.frame.insetBy(dx: -8.5, dy: -9.0)
-            if lComfort.contains(point) { lscore -= 42 }
-            if rComfort.contains(point) { rscore -= 42 }
+            let hitbox = KeyboardPreferences.shared.hitboxMode
+            let lComfort = lhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY)
+            let rComfort = rhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY)
+            if lComfort.contains(point) { lscore -= hitbox.comfortBonus }
+            if rComfort.contains(point) { rscore -= hitbox.comfortBonus }
 
             // Hysteresis: while sliding, the source key keeps a small advantage
             // until the finger has clearly entered a neighbor's zone.
@@ -1345,7 +1346,8 @@ final class TouchKey: UIButton {
            let touch = touches.first,
            let container = superview {
             let point = touch.location(in: container)
-            if frame.insetBy(dx: -14, dy: -9).contains(point) {
+            let hitbox = KeyboardPreferences.shared.hitboxMode
+            if frame.insetBy(dx: -max(14, hitbox.expansionX), dy: -max(9, hitbox.expansionY)).contains(point) {
                 TouchLearningModel.shared.record(key: key, point: point, frame: frame)
             }
         }
@@ -1470,9 +1472,13 @@ final class KeyCanvasView: UIView {
             var lscore = ldx * ldx + 0.22 * ldy * ldy
             var rscore = rdx * rdx + 0.22 * rdy * rdy
 
-            // ~8.5pt horizontal and 9pt vertical invisible expansion.
-            if lhs.frame.insetBy(dx: -8.5, dy: -9).contains(point) { lscore -= 42 }
-            if rhs.frame.insetBy(dx: -8.5, dy: -9).contains(point) { rscore -= 42 }
+            let hitbox = KeyboardPreferences.shared.hitboxMode
+            if lhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY).contains(point) {
+                lscore -= hitbox.comfortBonus
+            }
+            if rhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY).contains(point) {
+                rscore -= hitbox.comfortBonus
+            }
 
             return lscore < rscore
         }
