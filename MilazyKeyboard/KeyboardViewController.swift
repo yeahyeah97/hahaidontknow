@@ -1082,6 +1082,24 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
                 ]))
             }
 
+        case .menu:
+            title.text = "Milazy Tools"
+            aiStatusLabel.text = "Emoji · GIF · Clipboard · Translate · Language · Layout · Hitbox · Settings"
+
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("Emoji", action: #selector(menuEmoji)),
+                aiPanelButton("GIF", action: #selector(aiGIF)),
+                aiPanelButton("Appunti", action: #selector(openClipboardPanel)),
+                aiPanelButton("Traduttore", action: #selector(menuTranslate))
+            ]))
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("Lingua", action: #selector(cycleLanguage)),
+                aiPanelButton("Layout", action: #selector(cycleLayout)),
+                aiPanelButton("Hitbox", action: #selector(cycleHitbox)),
+                aiPanelButton("Impostazioni", action: #selector(openSettingsPanel))
+            ]))
+            content.addArrangedSubview(aiPanelButton("Chiudi", action: #selector(closeTools)))
+
         case .clipboard:
             title.text = "Clipboard History"
             ClipboardHistory.shared.importSystemClipboard()
