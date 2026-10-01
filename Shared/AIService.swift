@@ -177,28 +177,39 @@ final class AIService {
         guard let key = apiKey else { return nil }
 
         if action == .fix {
-            let map = await generate(
-                text: text,
-                instruction: action.semanticAnalysisInstruction,
-                apiKey: key,
-                maxOutputTokens: 420
-            )
-
-            if let map, !map.isEmpty {
-                let combined = """
-                ORIGINAL TEXT:
-                \(text)
-
-                SEMANTIC MAP:
-                \(map)
-                """
-                if let final = await generate(
-                    text: combined,
-                    instruction: action.instruction,
+            if needsDeepSemanticPass(text) {
+                let map = await generate(
+                    text: text,
+                    instruction: action.semanticAnalysisInstruction,
                     apiKey: key,
-                    maxOutputTokens: 512
-                ) {
-                    return final
+                    maxOutputTokens: 240
+                )
+
+                if let map, !map.isEmpty {
+                    let combined = """
+                    ORIGINAL TEXT:
+                    \(text)
+
+                    SEMANTIC MAP:
+                    \(map)
+                    """
+                    if let final = await generate(
+                        text: combined,
+                        instruction: action.instruction,
+                        apiKey: key,
+                        maxOutputTokens: 420
+                    ) {
+                        return final
+                    }
+                }
+            } else {
+                let quick = """
+                Correct spelling, grammar, punctuation, and obvious typing mistakes.
+                Preserve the exact meaning, language, names, slang, tone, negation, tense and who is doing what to whom.
+                Return only the corrected text.
+                """
+                if let result = await generate(text: text, instruction: quick, apiKey: key, maxOutputTokens: 320) {
+                    return result
                 }
             }
         }
@@ -207,8 +218,31 @@ final class AIService {
             text: text,
             instruction: action.instruction,
             apiKey: key,
-            maxOutputTokens: 512
+            maxOutputTokens: 420
         )
+    }
+
+    private func needsDeepSemanticPass(_ text: String) -> Bool {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return false }
+
+        let words = cleaned.split { !$0.isLetter && !$0.isNumber }
+        if words.count <= 5 { return true }
+
+        let punctuationCount = cleaned.filter { ".!?,;:".contains($0) }.count
+        let punctuationRatio = Double(punctuationCount) / Double(max(words.count, 1))
+
+        let lower = cleaned.lowercased()
+        let scopeWords = [
+            "spero","voglio","vorrei","deve","può","forse","se ","perché","penso","credo",
+            "hope","want","wish","must","maybe","if ","because","think"
+        ]
+        let hasScopeMarker = scopeWords.contains { lower.contains($0) }
+
+        let shortFragments = words.filter { $0.count <= 3 }.count
+        let compressed = punctuationRatio < 0.08 && shortFragments >= max(3, words.count / 3)
+
+        return hasScopeMarker || compressed
     }
 
     private func generate(
