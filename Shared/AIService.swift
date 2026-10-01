@@ -66,7 +66,7 @@ private extension AIAction {
         - Be concise. This semantic map is for a second model pass, not for the user.
         """
     }
-
+}
 
 final class AIService {
     static let shared = AIService()
