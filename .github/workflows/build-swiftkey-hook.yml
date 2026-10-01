@@ -1,4 +1,4 @@
-name: Build SwiftKey Patch Hook
+name: Build SwiftKey Patch Runtime
 
 on:
   push:
@@ -13,12 +13,29 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Build arm64 iOS dylib
+      - name: Build arm64 iOS hook and host
         run: |
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          clang -fobjc-arc -dynamiclib -arch arm64             -isysroot "$SDK"             -miphoneos-version-min=16.0             -framework UIKit -framework Foundation -framework Security             -install_name "@executable_path/Frameworks/DeafKeyHook.dylib"             SwiftKeyPatch/DeafKeyHook.m             -o DeafKeyHook.dylib
-          file DeafKeyHook.dylib
+          clang -fobjc-arc -dynamiclib -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=16.0 \
+            -framework UIKit -framework Foundation -framework Security \
+            -install_name "@executable_path/Frameworks/DeafKeyHook.dylib" \
+            SwiftKeyPatch/DeafKeyHook.m \
+            -o DeafKeyHook.dylib
+
+          clang -fobjc-arc -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=16.0 \
+            -framework UIKit -framework Foundation \
+            SwiftKeyPatch/DeafKeyHost.m \
+            -o DeafKeyApp
+
+          file DeafKeyHook.dylib DeafKeyApp
+
       - uses: actions/upload-artifact@v4
         with:
-          name: DeafKeyHook
-          path: DeafKeyHook.dylib
+          name: DeafKeyRuntime
+          path: |
+            DeafKeyHook.dylib
+            DeafKeyApp
