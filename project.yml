@@ -1,45 +1,29 @@
-name: G2LAB
+name: MilazyKeyboard
 options:
-  bundleIdPrefix: com.g2lab
+  bundleIdPrefix: com.milazy
   deploymentTarget:
     iOS: '16.0'
-packages:
-  MentraBluetoothSDK:
-    url: https://github.com/Mentra-Community/mentra-bluetooth-sdk-ios.git
-    exactVersion: 3.2.1-beta.429
-  SherpaOnnx:
-    url: https://github.com/k2-fsa/sherpa-onnx.git
-    exactVersion: 1.13.8
 targets:
-  G2LAB:
-    type: application
+  MilazyKeyboard:
+    type: app
     platform: iOS
-    sources: [G2LAB]
-    resources:
-      - G2LAB/Resources
+    sources: [MilazyApp, Shared]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.g2lab.app
-        MARKETING_VERSION: 0.3.2
-        CURRENT_PROJECT_VERSION: 6
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SWIFT_VERSION: 5.9
-        TARGETED_DEVICE_FAMILY: '1'
-        CODE_SIGN_STYLE: Manual
+        PRODUCT_BUNDLE_IDENTIFIER: com.milazy.keyboard
+        INFOPLIST_FILE: MilazyApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MilazyApp/MilazyApp.entitlements
         CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_IDENTITY: ''
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: G2 LAB
-        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: G2 LAB connects to Even Realities G2 over Bluetooth.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: G2 LAB uses microphone audio for captions and accessibility features when enabled.
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: G2 LAB uses on-device speech recognition for offline captions.
-        INFOPLIST_KEY_UIBackgroundModes:
-          - bluetooth-central
-          - fetch
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     dependencies:
-      - package: MentraBluetoothSDK
-        product: MentraBluetoothSDK
-      - package: SherpaOnnx
-        product: sherpa-onnx
+      - target: MilazyKeyboardExtension
+  MilazyKeyboardExtension:
+    type: app-extension
+    platform: iOS
+    sources: [MilazyKeyboard, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milazy.keyboard.extension
+        INFOPLIST_FILE: MilazyKeyboard/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MilazyKeyboard/MilazyKeyboard.entitlements
+        CODE_SIGNING_ALLOWED: NO
+        SKIP_INSTALL: YES
