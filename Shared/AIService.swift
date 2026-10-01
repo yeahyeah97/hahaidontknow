@@ -10,7 +10,30 @@ enum AIAction {
     var instruction: String {
         switch self {
         case .fix:
-            return "Correct spelling, grammar, punctuation, and obvious typing mistakes. Preserve the original meaning, language, slang, abbreviations, and tone. Return only the corrected text, with no explanation."
+            return """
+            Reconstruct the intended meaning first, then rewrite the text naturally.
+
+            The input may be fragmented, telegraphic, grammatically non-standard, or influenced by sign-language word order. Do NOT correct it word-by-word. Infer the logical relationships between the words and clauses, restore omitted articles/prepositions/verbs when strongly implied, and reorder the sentence when needed so the intended meaning becomes clear.
+
+            Rules:
+            - Keep the same language as the input unless the user explicitly asks to translate.
+            - Preserve names, usernames, numbers, technical terms, slang, emojis, emphasis, and emotional tone.
+            - Preserve the person's actual intent; do not make the message more formal unless needed for clarity.
+            - Use surrounding words to resolve likely meaning.
+            - Do not invent new facts, motives, people, dates, or details.
+            - If one fragment is genuinely ambiguous, choose the least-assumptive plausible reading and preserve uncertainty rather than hallucinating.
+            - Output ONLY the reconstructed natural sentence/message, with no explanation or quotation marks.
+
+            Examples:
+            Input: "Spiegare ssd come fare mettere dentro pc Lui 4 anni ssd 2TB montare dentro fatto mai"
+            Output: "Spiegagli come montare l’SSD nel PC: ha un SSD da 2 TB da 4 anni e non l’ha mai montato."
+
+            Input: "io ieri andare palestra lui non venire perché lavoro tanto"
+            Output: "Ieri sono andato in palestra, ma lui non è venuto perché aveva molto lavoro."
+
+            Input: "domani mamma ospedale io accompagnare poi lavoro tardi"
+            Output: "Domani accompagno mia mamma in ospedale, poi andrò al lavoro più tardi."
+            """
         case .rewrite:
             return "Rewrite the text so it sounds clearer and more natural while preserving the original meaning and language. Return only the rewritten text, with no explanation."
         case .translate:
