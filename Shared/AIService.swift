@@ -22,6 +22,7 @@ enum AIAction {
             - Turn implied questions into explicit natural questions.
             - Turn object-description fragments into identification questions when appropriate: e.g. "armadio porta arancione" may mean "Quale armadio? Quello con la porta arancione?"
             - Turn state/action fragments into the likely practical question when strongly supported: e.g. "porta chiusa" in an instructional context may mean "deve restare chiusa o va aperta?"
+            - Resolve approximate object descriptions from context when safe. Example: "armadio arancione porte pacchi" can naturally become "il locker/armadietto arancione con gli sportelli dove ci sono i pacchi" if the package context is explicit.
             - Keep separate intents separate instead of forcing everything into one long sentence.
             - Prefer simple conversational language over formal language.
             - Do not invent missing facts just to make the sentence smooth.
@@ -57,6 +58,7 @@ private extension AIAction {
         Important:
         - Treat short noun clusters as possible compressed questions, not merely broken grammar.
         - Use proximity and practical context to resolve references: an adjective/color after an object may identify which object; a state word may ask what to do with that object.
+        - Treat everyday object labels as possibly approximate. For example, "armadio" together with "pacchi", "sportelli/porte", a color, and opening/closing may refer to a parcel locker rather than a literal wardrobe. Only make that inference when the surrounding words support it.
         - Reconstruct the smallest plausible chain of meaning.
         - Do not invent facts, identities, motives, locations, or actions unsupported by the text.
         - Do not assume anything about the writer's disability, education, or background.
