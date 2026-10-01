@@ -966,85 +966,273 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private func rebuildAIPanel() {
         aiPanel.subviews.forEach { $0.removeFromSuperview() }
 
+        let content = UIStackView()
+        content.axis = .vertical
+        content.spacing = 6
+        content.translatesAutoresizingMaskIntoConstraints = false
+        aiPanel.addSubview(content)
+
         let title = UILabel()
-        title.text = "Deaf AI · Gemini"
-        title.font = .systemFont(ofSize: 18, weight: .semibold)
+        title.font = .systemFont(ofSize: 16.5, weight: .semibold)
         title.textAlignment = .center
+
+        aiStatusLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        aiStatusLabel.numberOfLines = 1
 
         let top = UIStackView(arrangedSubviews: [title, aiStatusLabel])
         top.axis = .vertical
-        top.spacing = 4
-
-        let content = UIStackView()
-        content.axis = .vertical
-        content.spacing = 8
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        aiPanel.addSubview(content)
+        top.spacing = 2
         content.addArrangedSubview(top)
 
-        if !hasFullAccess {
-            aiStatusLabel.text = "Enable Allow Full Access in iOS Settings to use Gemini AI."
-            content.addArrangedSubview(aiPanelButton("Back", action: #selector(aiBack)))
-        } else if !AIService.shared.hasAPIKey {
-            aiStatusLabel.text = "Copy your Gemini API key, then tap Paste Gemini Key."
-            content.addArrangedSubview(aiPanelButton("Paste Gemini Key", action: #selector(aiPasteKey)))
-            content.addArrangedSubview(aiPanelButton("Back", action: #selector(aiBack)))
-        } else {
-            aiStatusLabel.text = "AI only runs when you tap one of these actions."
+        switch toolPanel {
+        case .ai:
+            title.text = "Deaf AI · Gemini"
 
-            let row1 = UIStackView(arrangedSubviews: [
-                aiPanelButton("Fix", action: #selector(aiFix)),
-                aiPanelButton("Rewrite", action: #selector(aiRewrite))
-            ])
-            row1.axis = .horizontal
-            row1.spacing = 8
-            row1.distribution = .fillEqually
+            if !hasFullAccess {
+                aiStatusLabel.text = "Allow Full Access is required for AI, GIF and clipboard."
+                content.addArrangedSubview(aiPanelButton("Back", action: #selector(aiBack)))
+            } else if !AIService.shared.hasAPIKey {
+                aiStatusLabel.text = "Copy your Gemini key, then paste it here."
+                content.addArrangedSubview(aiPanelButton("Paste Gemini Key", action: #selector(aiPasteKey)))
+                content.addArrangedSubview(makePanelRow([
+                    aiPanelButton("Clipboard", action: #selector(openClipboardPanel)),
+                    aiPanelButton("Settings", action: #selector(openSettingsPanel)),
+                    aiPanelButton("Back", action: #selector(aiBack))
+                ]))
+            } else {
+                aiStatusLabel.text = "Semantic Fix + rewrite tools"
 
-            let row2 = UIStackView(arrangedSubviews: [
-                aiPanelButton("Translate EN ↔ IT", action: #selector(aiTranslate)),
-                aiPanelButton("Tone", action: #selector(aiTone))
-            ])
-            row2.axis = .horizontal
-            row2.spacing = 8
-            row2.distribution = .fillEqually
+                content.addArrangedSubview(makePanelRow([
+                    aiPanelButton("Fix", action: #selector(aiFix)),
+                    aiPanelButton("Rewrite", action: #selector(aiRewrite))
+                ]))
+                content.addArrangedSubview(makePanelRow([
+                    aiPanelButton("Translate EN ↔ IT", action: #selector(aiTranslate)),
+                    aiPanelButton("Tone", action: #selector(aiTone))
+                ]))
+                content.addArrangedSubview(makePanelRow([
+                    aiPanelButton("Clipboard", action: #selector(openClipboardPanel)),
+                    aiPanelButton("GIF", action: #selector(aiGIF)),
+                    aiPanelButton("Settings", action: #selector(openSettingsPanel))
+                ]))
+                content.addArrangedSubview(makePanelRow([
+                    aiPanelButton("Change Key", action: #selector(aiChangeKey)),
+                    aiPanelButton("Back", action: #selector(aiBack))
+                ]))
+            }
 
-            let row3 = UIStackView(arrangedSubviews: [
-                aiPanelButton("Clipboard", action: #selector(aiClipboard)),
-                aiPanelButton("Change Key", action: #selector(aiChangeKey)),
+        case .clipboard:
+            title.text = "Clipboard History"
+            ClipboardHistory.shared.importSystemClipboard()
+            let items = Array(ClipboardHistory.shared.items.prefix(4))
+            aiStatusLabel.text = items.isEmpty ? "Copy text, then reopen Clipboard." : "\(ClipboardHistory.shared.items.count) saved locally"
+
+            for pairStart in stride(from: 0, to: items.count, by: 2) {
+                var buttons: [UIButton] = []
+                for index in pairStart..<min(pairStart + 2, items.count) {
+                    let text = items[index]
+                    let label = String(text.replacingOccurrences(of: "\n", with: " ").prefix(24))
+                    let button = aiPanelButton(label, action: #selector(pasteClipboardItem(_:)))
+                    button.tag = index
+                    buttons.append(button)
+                }
+                content.addArrangedSubview(makePanelRow(buttons))
+            }
+
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("Import Current", action: #selector(importClipboard)),
+                aiPanelButton("Clear", action: #selector(clearClipboard)),
                 aiPanelButton("Back", action: #selector(aiBack))
-            ])
-            row3.axis = .horizontal
-            row3.spacing = 8
-            row3.distribution = .fillEqually
+            ]))
 
-            content.addArrangedSubview(row1)
-            content.addArrangedSubview(row2)
-            content.addArrangedSubview(row3)
+        case .settings:
+            title.text = "Milazy Keyboard 3.0"
+            aiStatusLabel.text = "Typing engine settings"
+
+            let prefs = KeyboardPreferences.shared
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("Language: \(prefs.languageMode.title)", action: #selector(cycleLanguage)),
+                aiPanelButton("Layout: \(prefs.layoutMode.title)", action: #selector(cycleLayout))
+            ]))
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("Hitbox: \(prefs.hitboxMode.title)", action: #selector(cycleHitbox)),
+                aiPanelButton("Popups: \(prefs.keyPopups ? "On" : "Off")", action: #selector(togglePopups))
+            ]))
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("Haptic: \(prefs.haptics ? "On" : "Off")", action: #selector(toggleHaptics)),
+                aiPanelButton("Sound: \(prefs.sound ? "On" : "Off")", action: #selector(toggleSound))
+            ]))
+
+            let gif = GIFService.shared
+            content.addArrangedSubview(makePanelRow([
+                aiPanelButton("GIF: \(gif.provider.title)", action: #selector(cycleGIFProvider)),
+                aiPanelButton(gif.hasKey ? "Change GIF Key" : "Paste GIF Key", action: #selector(pasteGIFKey)),
+                aiPanelButton("Back", action: #selector(aiBack))
+            ]))
         }
 
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: aiPanel.leadingAnchor, constant: 12),
-            content.trailingAnchor.constraint(equalTo: aiPanel.trailingAnchor, constant: -12),
-            content.topAnchor.constraint(equalTo: aiPanel.topAnchor, constant: 8)
+            content.leadingAnchor.constraint(equalTo: aiPanel.leadingAnchor, constant: 10),
+            content.trailingAnchor.constraint(equalTo: aiPanel.trailingAnchor, constant: -10),
+            content.topAnchor.constraint(equalTo: aiPanel.topAnchor, constant: 4)
         ])
         updateAppearance()
+    }
+
+    private func makePanelRow(_ buttons: [UIButton]) -> UIStackView {
+        let row = UIStackView(arrangedSubviews: buttons)
+        row.axis = .horizontal
+        row.spacing = 6
+        row.distribution = .fillEqually
+        return row
     }
 
     private func aiPanelButton(_ title: String, action: Selector) -> UIButton {
         let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+        button.titleLabel?.lineBreakMode = .byTruncatingTail
         button.setTitleColor(.white, for: .normal)
         button.backgroundColor = UIColor(white: 0.27, alpha: 1)
         button.layer.cornerRadius = 8
-        button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
         button.addTarget(self, action: action, for: .touchUpInside)
         return button
     }
 
     @objc private func aiBack() {
+        if toolPanel == .ai {
+            hideAIPanel()
+        } else {
+            toolPanel = .ai
+            aiStatusLabel.text = nil
+            rebuildAIPanel()
+        }
+    }
+
+    @objc private func openClipboardPanel() {
+        toolPanel = .clipboard
+        rebuildAIPanel()
+    }
+
+    @objc private func openSettingsPanel() {
+        toolPanel = .settings
+        rebuildAIPanel()
+    }
+
+    @objc private func importClipboard() {
+        ClipboardHistory.shared.importSystemClipboard()
+        rebuildAIPanel()
+    }
+
+    @objc private func clearClipboard() {
+        ClipboardHistory.shared.clear()
+        rebuildAIPanel()
+    }
+
+    @objc private func pasteClipboardItem(_ sender: UIButton) {
+        let items = ClipboardHistory.shared.items
+        guard sender.tag >= 0, sender.tag < items.count else { return }
+        let text = items[sender.tag]
+        textDocumentProxy.insertText(text)
+        ClipboardHistory.shared.add(text)
         hideAIPanel()
+        schedulePredictionRefresh()
+    }
+
+    @objc private func cycleLanguage() {
+        let values = KeyboardPreferences.LanguageMode.allCases
+        let current = KeyboardPreferences.shared.languageMode
+        let next = values[(values.firstIndex(of: current)! + 1) % values.count]
+        KeyboardPreferences.shared.languageMode = next
+        rebuildAIPanel()
+        refreshPredictions()
+    }
+
+    @objc private func cycleLayout() {
+        let values = KeyboardPreferences.LayoutMode.allCases
+        let current = KeyboardPreferences.shared.layoutMode
+        let next = values[(values.firstIndex(of: current)! + 1) % values.count]
+        KeyboardPreferences.shared.layoutMode = next
+        rebuildAIPanel()
+        view.setNeedsLayout()
+    }
+
+    @objc private func cycleHitbox() {
+        let values = KeyboardPreferences.HitboxMode.allCases
+        let current = KeyboardPreferences.shared.hitboxMode
+        KeyboardPreferences.shared.hitboxMode = values[(values.firstIndex(of: current)! + 1) % values.count]
+        rebuildAIPanel()
+    }
+
+    @objc private func togglePopups() {
+        KeyboardPreferences.shared.keyPopups.toggle()
+        hidePreview()
+        rebuildAIPanel()
+    }
+
+    @objc private func toggleHaptics() {
+        KeyboardPreferences.shared.haptics.toggle()
+        rebuildAIPanel()
+    }
+
+    @objc private func toggleSound() {
+        KeyboardPreferences.shared.sound.toggle()
+        rebuildAIPanel()
+    }
+
+    @objc private func cycleGIFProvider() {
+        let values = GIFService.Provider.allCases
+        let current = GIFService.shared.provider
+        GIFService.shared.provider = values[(values.firstIndex(of: current)! + 1) % values.count]
+        rebuildAIPanel()
+    }
+
+    @objc private func pasteGIFKey() {
+        guard let key = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else {
+            aiStatusLabel.text = "Copy a provider API key first."
+            return
+        }
+        GIFService.shared.saveKey(key, for: GIFService.shared.provider)
+        rebuildAIPanel()
+    }
+
+    @objc private func aiGIF() {
+        guard hasFullAccess else {
+            aiStatusLabel.text = "Full Access is required."
+            return
+        }
+        guard GIFService.shared.hasKey else {
+            toolPanel = .settings
+            aiStatusLabel.text = "Add a GIF provider key first."
+            rebuildAIPanel()
+            return
+        }
+
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let queryWords = words(in: context).suffix(3)
+        let query = queryWords.joined(separator: " ")
+        guard !query.isEmpty else {
+            aiStatusLabel.text = "Type a GIF search word first."
+            return
+        }
+
+        aiStatusLabel.text = "Finding GIF…"
+        setAIPanelControls(enabled: false)
+
+        Task {
+            let data = await GIFService.shared.firstGIFData(query: query)
+            await MainActor.run {
+                self.setAIPanelControls(enabled: true)
+                guard let data else {
+                    self.aiStatusLabel.text = "No GIF found / provider error."
+                    return
+                }
+                UIPasteboard.general.setData(data, forPasteboardType: "com.compuserve.gif")
+                self.aiStatusLabel.text = "GIF copied — paste it into the chat."
+            }
+        }
     }
 
     @objc private func aiPasteKey() {
@@ -1067,12 +1255,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     @objc private func aiClipboard() {
-        if let value = UIPasteboard.general.string {
-            textDocumentProxy.insertText(value)
-            hideAIPanel()
-        } else {
-            aiStatusLabel.text = "Clipboard is empty."
-        }
+        openClipboardPanel()
     }
 
     @objc private func aiFix() { runAI(.fix) }
