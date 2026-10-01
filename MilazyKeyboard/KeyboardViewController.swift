@@ -36,8 +36,8 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        preferredContentSize = CGSize(width: 0, height: 347)
-        view.clipsToBounds = false
+        preferredContentSize = CGSize(width: 0, height: 248)
+        view.clipsToBounds = true
         buildChrome()
         rebuildKeys()
         updateAppearance()
@@ -107,8 +107,9 @@ final class KeyboardViewController: UIInputViewController {
 
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyCanvas.topAnchor.constraint(equalTo: view.topAnchor, constant: 35),
-            keyCanvas.heightAnchor.constraint(equalToConstant: 213)
+            keyCanvas.topAnchor.constraint(equalTo: predictionBar.bottomAnchor),
+            keyCanvas.heightAnchor.constraint(equalToConstant: 213),
+            keyCanvas.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor)
         ])
     }
 
