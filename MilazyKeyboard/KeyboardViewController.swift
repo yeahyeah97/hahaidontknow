@@ -112,7 +112,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         aiButton.titleLabel?.font = .systemFont(ofSize: 11, weight: .bold)
         aiButton.layer.cornerRadius = 8
         aiButton.addTarget(self, action: #selector(aiTapped), for: .touchUpInside)
-        aiButton.accessibilityLabel = "Milazy AI"
+        aiButton.accessibilityLabel = "Deaf AI"
         view.addSubview(aiButton)
 
         keyCanvas.translatesAutoresizingMaskIntoConstraints = false
@@ -860,7 +860,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         aiPanel.subviews.forEach { $0.removeFromSuperview() }
 
         let title = UILabel()
-        title.text = "Milazy AI · Gemini"
+        title.text = "Deaf AI · Gemini"
         title.font = .systemFont(ofSize: 18, weight: .semibold)
         title.textAlignment = .center
 
