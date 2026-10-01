@@ -2,47 +2,47 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-static const NSInteger DKAIButtonTag = 0xD411;
-static const NSInteger DKToastTag = 0xD412;
+static const NSInteger DKAIButtonTag = 0xDA7101;
+static const NSInteger DKToastTag = 0xDA7102;
 
-static IMP DKSpaceOriginal = NULL;
-static IMP DKToolbarLayoutOriginal = NULL;
-static IMP DKMenuAddedOriginal = NULL;
+static IMP gToolbarLayoutOriginal = NULL;
+static IMP gCellOriginal = NULL;
+static IMP gSizeOriginal = NULL;
 
-static NSString *DKLower(NSString *s) {
-    return [s isKindOfClass:[NSString class]] ? s.lowercaseString : @"";
-}
-
-static BOOL DKContainsAny(NSString *value, NSArray<NSString *> *needles) {
-    NSString *lower = DKLower(value);
-    for (NSString *needle in needles) {
-        if ([lower containsString:needle.lowercaseString]) return YES;
-    }
-    return NO;
-}
-
-static NSString *DKVisibleText(UIView *view) {
-    NSMutableString *result = [NSMutableString string];
+static NSString *DKText(UIView *view) {
+    NSMutableString *out = [NSMutableString string];
 
     if ([view isKindOfClass:[UILabel class]]) {
         NSString *t = ((UILabel *)view).text;
-        if (t.length) [result appendFormat:@" %@", t];
+        if (t.length) [out appendFormat:@" %@", t];
     }
 
     if ([view isKindOfClass:[UIButton class]]) {
         NSString *t = [((UIButton *)view) titleForState:UIControlStateNormal];
-        if (t.length) [result appendFormat:@" %@", t];
+        if (t.length) [out appendFormat:@" %@", t];
     }
 
     if (view.accessibilityLabel.length) {
-        [result appendFormat:@" %@", view.accessibilityLabel];
+        [out appendFormat:@" %@", view.accessibilityLabel];
+    }
+
+    if (view.accessibilityIdentifier.length) {
+        [out appendFormat:@" %@", view.accessibilityIdentifier];
     }
 
     for (UIView *sub in view.subviews) {
-        [result appendString:DKVisibleText(sub)];
+        [out appendString:DKText(sub)];
     }
 
-    return result;
+    return out;
+}
+
+static BOOL DKContains(NSString *value, NSArray<NSString *> *needles) {
+    NSString *lower = value.lowercaseString ?: @"";
+    for (NSString *needle in needles) {
+        if ([lower containsString:needle.lowercaseString]) return YES;
+    }
+    return NO;
 }
 
 static UIInputViewController *DKInputController(UIResponder *responder) {
@@ -62,7 +62,7 @@ static void DKToast(UIView *root, NSString *message) {
     [[root viewWithTag:DKToastTag] removeFromSuperview];
 
     UILabel *label = [[UILabel alloc] initWithFrame:
-        CGRectMake(12, 40, MAX(100, root.bounds.size.width - 24), 34)];
+        CGRectMake(12, 42, MAX(120, root.bounds.size.width - 24), 34)];
 
     label.tag = DKToastTag;
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -77,32 +77,34 @@ static void DKToast(UIView *root, NSString *message) {
     [root addSubview:label];
     [root bringSubviewToFront:label];
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.1 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [UIView animateWithDuration:0.18 animations:^{
+        [UIView animateWithDuration:0.16 animations:^{
             label.alpha = 0;
-        } completion:^(__unused BOOL finished) {
+        } completion:^(__unused BOOL done) {
             [label removeFromSuperview];
         }];
     });
 }
 
 static NSString *DKAPIKey(void) {
-    return [[NSUserDefaults standardUserDefaults] stringForKey:@"deafkey.gemini.key"];
+    return [[NSUserDefaults standardUserDefaults]
+        stringForKey:@"deafkey.gemini.key"];
 }
 
-static void DKStoreAPIKey(UIView *root) {
-    NSString *key = [UIPasteboard generalPasteboard].string;
-    key = [key stringByTrimmingCharactersInSet:
+static void DKSaveAPIKey(UIView *root) {
+    NSString *value = [UIPasteboard generalPasteboard].string;
+    value = [value stringByTrimmingCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
 
-    if (key.length < 12) {
-        DKToast(root, @"Copy Gemini API key first, then hold AI");
+    if (value.length < 12) {
+        DKToast(root, @"Copy Gemini API key, then hold AI");
         return;
     }
 
-    [[NSUserDefaults standardUserDefaults] setObject:key
-                                             forKey:@"deafkey.gemini.key"];
+    [[NSUserDefaults standardUserDefaults]
+        setObject:value
+           forKey:@"deafkey.gemini.key"];
 
     DKToast(root, @"Gemini key saved ✓");
 }
@@ -110,38 +112,36 @@ static void DKStoreAPIKey(UIView *root) {
 static BOOL DKNeedsDeepPass(NSString *text) {
     NSString *lower = text.lowercaseString;
 
-    NSArray *markers = @[
-        @"spero", @"voglio", @"vorrei", @"forse", @" se ", @"perché",
-        @"penso", @"credo", @"hope", @"want", @"wish", @"maybe",
-        @" if ", @"because", @"think"
+    NSArray *scope = @[
+        @"spero", @"voglio", @"vorrei", @"forse", @" se ",
+        @"perché", @"penso", @"credo", @"hope", @"want",
+        @"wish", @"maybe", @" if ", @"because", @"think"
     ];
 
-    for (NSString *marker in markers) {
+    for (NSString *marker in scope) {
         if ([lower containsString:marker]) return YES;
     }
 
-    NSArray *pieces = [text componentsSeparatedByCharactersInSet:
+    NSArray *parts = [text componentsSeparatedByCharactersInSet:
         [[NSCharacterSet alphanumericCharacterSet] invertedSet]];
 
     NSInteger words = 0;
     NSInteger shortWords = 0;
 
-    for (NSString *piece in pieces) {
-        if (!piece.length) continue;
+    for (NSString *word in parts) {
+        if (!word.length) continue;
         words++;
-        if (piece.length <= 3) shortWords++;
+        if (word.length <= 3) shortWords++;
     }
 
     if (words <= 5) return YES;
 
     NSInteger punctuation = 0;
-    NSCharacterSet *punctuationSet =
+    NSCharacterSet *set =
         [NSCharacterSet characterSetWithCharactersInString:@".,!?;:"];
 
     for (NSUInteger i = 0; i < text.length; i++) {
-        if ([punctuationSet characterIsMember:[text characterAtIndex:i]]) {
-            punctuation++;
-        }
+        if ([set characterIsMember:[text characterAtIndex:i]]) punctuation++;
     }
 
     return punctuation == 0 && shortWords >= MAX(3, words / 3);
@@ -149,24 +149,25 @@ static BOOL DKNeedsDeepPass(NSString *text) {
 
 static NSString *DKSemanticPrompt(void) {
     return @"Analyze the fragmented message before rewriting it. "
-    "Build a compact semantic map containing SPEAKER_GOAL, ENTITIES_AND_REFERENCES, "
+    "Build a compact semantic map containing: SPEAKER_GOAL; ENTITIES_AND_REFERENCES; "
     "SEMANTIC_ROLES (who does/thinks/wants what, to/about whom, when, where, why, "
-    "condition and result), RELATION_GRAPH, MODALITY_SCOPE, DESIRED_OR_FEARED_OUTCOME, "
-    "EVENT_STATUS (fact, plan, hypothetical, possibility, wish, fear, command, question, unknown), "
-    "POLARITY, IMPLICIT_QUESTIONS, OMITTED_LINKS and UNCERTAINTY. "
-    "Do not merge nearby fragments automatically. Preserve negation, conditions, "
-    "actor/target relationships and event status. Do not invent facts. Be concise.";
+    "condition and result); RELATION_GRAPH; MODALITY_SCOPE; DESIRED_OR_FEARED_OUTCOME; "
+    "EVENT_STATUS (fact, plan, hypothetical, possibility, wish, fear, command, question, unknown); "
+    "POLARITY; IMPLICIT_QUESTIONS; OMITTED_LINKS; UNCERTAINTY. "
+    "Do not merge adjacent fragments automatically. Preserve negation, conditions, "
+    "actor/target relationships and whether something happened or is only desired. "
+    "Do not invent facts. Be concise.";
 }
 
 static NSString *DKFinalPrompt(void) {
-    return @"Rewrite the original fragmented message into the most likely natural message "
-    "using the semantic map only as an interpretation aid. The original text is the source "
-    "of truth. Preserve language, names, places, numbers, slang, tone and concrete facts. "
-    "Preserve who does/thinks/wants/asks what, toward whom or what, and preserve negation, "
-    "tense, conditions, causes and whether each event is a fact, wish, fear, possibility, "
-    "question, command or plan. If there are multiple intentions, keep them separate. "
+    return @"Rewrite the original fragmented message into the most likely natural message. "
+    "Use the semantic map only as an interpretation aid; ORIGINAL TEXT is the source of truth. "
+    "Preserve language, names, places, numbers, slang, tone and concrete facts. "
+    "Preserve who does/thinks/wants/asks what, toward whom or what, negation, tense, "
+    "conditions, causes, and whether each event is a fact, wish, fear, possibility, "
+    "question, command or plan. Keep separate intentions separate. "
     "Turn implicit questions into natural explicit questions only when supported. "
-    "Do not invent facts. If a relation is uncertain, use conservative wording. "
+    "Do not invent facts. If uncertain, use conservative wording. "
     "Output ONLY the reconstructed message.";
 }
 
@@ -179,24 +180,33 @@ static void DKGemini(NSString *key,
     NSURL *url = [NSURL URLWithString:
         @"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"];
 
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    NSMutableURLRequest *request =
+        [NSMutableURLRequest requestWithURL:url];
+
     request.HTTPMethod = @"POST";
     request.timeoutInterval = 20;
 
     [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
-    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:@"application/json"
+   forHTTPHeaderField:@"Content-Type"];
 
     NSDictionary *body = @{
-        @"systemInstruction": @{@"parts": @[@{@"text": instruction}]},
+        @"systemInstruction": @{
+            @"parts": @[@{@"text": instruction}]
+        },
         @"contents": @[@{
             @"role": @"user",
             @"parts": @[@{@"text": text}]
         }],
-        @"generationConfig": @{@"maxOutputTokens": @(maxTokens)}
+        @"generationConfig": @{
+            @"maxOutputTokens": @(maxTokens)
+        }
     };
 
     request.HTTPBody =
-        [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+        [NSJSONSerialization dataWithJSONObject:body
+                                        options:0
+                                          error:nil];
 
     [[[NSURLSession sharedSession]
         dataTaskWithRequest:request
@@ -205,7 +215,6 @@ static void DKGemini(NSString *key,
                             NSError *error) {
 
         NSString *result = nil;
-
         NSInteger status =
             [(NSHTTPURLResponse *)response statusCode];
 
@@ -240,7 +249,8 @@ static void DKReplaceContext(UIInputViewController *controller,
                              NSString *context,
                              NSString *replacement) {
 
-    id<UITextDocumentProxy> proxy = controller.textDocumentProxy;
+    id<UITextDocumentProxy> proxy =
+        controller.textDocumentProxy;
 
     __block NSInteger count = 0;
 
@@ -264,17 +274,16 @@ static void DKRunFix(UIButton *button) {
     UIInputViewController *controller =
         DKInputController(button);
 
-    UIView *root =
-        controller.view ?: button.superview;
+    UIView *root = controller.view ?: button.window;
 
     if (!controller) {
         DKToast(root, @"Keyboard context unavailable");
         return;
     }
 
-    NSString *apiKey = DKAPIKey();
+    NSString *key = DKAPIKey();
 
-    if (!apiKey.length) {
+    if (!key.length) {
         DKToast(root, @"Copy Gemini key, then hold AI once");
         return;
     }
@@ -308,20 +317,20 @@ static void DKRunFix(UIButton *button) {
         NSString *quick =
             @"Correct spelling, grammar, punctuation and obvious typing mistakes. "
              "Preserve exact meaning, language, names, slang, tone, negation, tense "
-             "and who is doing what to whom. Return only the corrected text.";
+             "and who is doing what to whom. Return only corrected text.";
 
-        DKGemini(apiKey, quick, context, 320, finish);
+        DKGemini(key, quick, context, 320, finish);
 
     } else {
 
-        DKGemini(apiKey,
+        DKGemini(key,
                  DKSemanticPrompt(),
                  context,
                  240,
                  ^(NSString *map) {
 
             if (!map.length) {
-                DKGemini(apiKey,
+                DKGemini(key,
                          DKFinalPrompt(),
                          context,
                          420,
@@ -335,7 +344,7 @@ static void DKRunFix(UIButton *button) {
                     context,
                     map];
 
-            DKGemini(apiKey,
+            DKGemini(key,
                      DKFinalPrompt(),
                      combined,
                      420,
@@ -344,49 +353,74 @@ static void DKRunFix(UIButton *button) {
     }
 }
 
-@interface DKActions : NSObject
+@interface DKActionTarget : NSObject
 + (instancetype)shared;
-- (void)tapAI:(UIButton *)sender;
-- (void)holdAI:(UILongPressGestureRecognizer *)sender;
+- (void)tap:(UIButton *)sender;
+- (void)hold:(UILongPressGestureRecognizer *)sender;
 @end
 
-@implementation DKActions
+@implementation DKActionTarget
 
 + (instancetype)shared {
-    static DKActions *instance;
-    static dispatch_once_t onceToken;
-
-    dispatch_once(&onceToken, ^{
-        instance = [DKActions new];
+    static DKActionTarget *target;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        target = [DKActionTarget new];
     });
-
-    return instance;
+    return target;
 }
 
-- (void)tapAI:(UIButton *)sender {
+- (void)tap:(UIButton *)sender {
     DKRunFix(sender);
 }
 
-- (void)holdAI:(UILongPressGestureRecognizer *)sender {
+- (void)hold:(UILongPressGestureRecognizer *)sender {
     if (sender.state == UIGestureRecognizerStateBegan) {
-        DKStoreAPIKey(sender.view);
+        DKSaveAPIKey(sender.view);
     }
 }
 
 @end
 
-static UIButton *DKExistingAIButton(UIView *view) {
-    UIView *existing =
-        [view viewWithTag:DKAIButtonTag];
+static UIView *DKFindCopilotControl(UIView *root) {
+    for (UIView *sub in root.subviews) {
+        NSString *text = DKText(sub);
 
-    return [existing isKindOfClass:[UIButton class]]
-        ? (UIButton *)existing
-        : nil;
+        if ([sub isKindOfClass:[UIControl class]]
+            && DKContains(text, @[
+                @"copilot",
+                @"id_toolbar_copilot"
+            ])) {
+            return sub;
+        }
+
+        UIView *nested = DKFindCopilotControl(sub);
+        if (nested) return nested;
+    }
+
+    return nil;
 }
 
 static void DKInstallAIButton(UIView *toolbar) {
+    UIView *copilot = DKFindCopilotControl(toolbar);
+
+    CGRect slot =
+        CGRectMake(4,
+                   3,
+                   44,
+                   MAX(28, toolbar.bounds.size.height - 6));
+
+    if (copilot && copilot.superview) {
+        slot =
+            [copilot.superview convertRect:copilot.frame
+                                    toView:toolbar];
+
+        copilot.hidden = YES;
+        copilot.userInteractionEnabled = NO;
+    }
+
     UIButton *button =
-        DKExistingAIButton(toolbar);
+        (UIButton *)[toolbar viewWithTag:DKAIButtonTag];
 
     if (!button) {
         button =
@@ -405,46 +439,45 @@ static void DKInstallAIButton(UIView *toolbar) {
                               weight:UIFontWeightBold];
 
         button.backgroundColor =
-            [UIColor colorWithRed:0.23
-                            green:0.19
-                             blue:0.32
+            [UIColor colorWithRed:0.27
+                            green:0.21
+                             blue:0.38
                             alpha:0.98];
 
         button.layer.cornerRadius = 10;
         button.accessibilityLabel = @"Deaf AI Fix";
 
-        [button addTarget:[DKActions shared]
-                   action:@selector(tapAI:)
+        [button addTarget:[DKActionTarget shared]
+                   action:@selector(tap:)
          forControlEvents:UIControlEventTouchUpInside];
 
         UILongPressGestureRecognizer *hold =
             [[UILongPressGestureRecognizer alloc]
-                initWithTarget:[DKActions shared]
-                        action:@selector(holdAI:)];
+                initWithTarget:[DKActionTarget shared]
+                        action:@selector(hold:)];
 
         hold.minimumPressDuration = 0.55;
-
         [button addGestureRecognizer:hold];
 
         [toolbar addSubview:button];
     }
 
-    CGFloat height =
-        MAX(28, MIN(36, toolbar.bounds.size.height - 6));
+    if (slot.size.width < 30 || slot.size.width > 80) {
+        slot.size.width = 44;
+    }
 
-    button.frame =
-        CGRectMake(3,
-                   MAX(2, (toolbar.bounds.size.height - height) * 0.5),
-                   45,
-                   height);
+    if (slot.size.height < 26) {
+        slot.size.height = 32;
+    }
 
+    button.frame = slot;
     [toolbar bringSubviewToFront:button];
 }
 
 static void DKToolbarLayout(id self, SEL _cmd) {
-    if (DKToolbarLayoutOriginal) {
+    if (gToolbarLayoutOriginal) {
         ((void(*)(id,SEL))
-            DKToolbarLayoutOriginal)(self, _cmd);
+            gToolbarLayoutOriginal)(self, _cmd);
     }
 
     if ([self isKindOfClass:[UIView class]]) {
@@ -452,83 +485,103 @@ static void DKToolbarLayout(id self, SEL _cmd) {
     }
 }
 
-static void DKDrawSpace(id self,
-                        SEL _cmd,
-                        id key,
-                        NSString *imageName,
-                        NSString *enabledLanguages,
-                        CGRect frame,
-                        CGContextRef context,
-                        NSString *attribute) {
+static NSMutableSet<NSIndexPath *> *DKHiddenPaths(id controller) {
+    static char key;
 
-    if (!DKSpaceOriginal) return;
+    NSMutableSet *set =
+        objc_getAssociatedObject(controller, &key);
 
-    ((void(*)(id,SEL,id,NSString*,NSString*,CGRect,CGContextRef,NSString *))
-        DKSpaceOriginal)
-        (self,
-         _cmd,
-         key,
-         @"",
-         @"EN IT",
-         frame,
-         context,
-         attribute);
+    if (!set) {
+        set = [NSMutableSet set];
+
+        objc_setAssociatedObject(controller,
+                                 &key,
+                                 set,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    return set;
 }
 
-static void DKHideBlockedToolCells(UIView *root) {
-    NSArray *blocked = @[
+static BOOL DKBlockedToolCell(UIView *cell) {
+    return DKContains(DKText(cell), @[
         @"rewards",
         @"microsoft rewards",
         @"messages",
         @"messaggi",
-        @"copilot"
-    ];
+        @"messaging_center"
+    ]);
+}
 
-    for (UIView *sub in root.subviews) {
+static id DKCell(id self,
+                 SEL _cmd,
+                 UICollectionView *collectionView,
+                 NSIndexPath *indexPath) {
 
-        NSString *visible =
-            DKVisibleText(sub);
+    id cell =
+        ((id(*)(id,SEL,id,id))
+            gCellOriginal)(self,
+                           _cmd,
+                           collectionView,
+                           indexPath);
 
-        if ([sub isKindOfClass:[UICollectionViewCell class]]
-            && DKContainsAny(visible, blocked)) {
+    if ([cell isKindOfClass:[UIView class]]
+        && DKBlockedToolCell((UIView *)cell)) {
 
-            sub.hidden = YES;
-            sub.alpha = 0;
-            sub.userInteractionEnabled = NO;
+        [DKHiddenPaths(self) addObject:indexPath];
 
-        } else {
-            DKHideBlockedToolCells(sub);
+        UIView *view = (UIView *)cell;
+        view.hidden = YES;
+        view.alpha = 0;
+        view.userInteractionEnabled = NO;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [collectionView.collectionViewLayout invalidateLayout];
+        });
+    }
+
+    return cell;
+}
+
+static CGSize DKSize(id self,
+                     SEL _cmd,
+                     UICollectionView *collectionView,
+                     UICollectionViewLayout *layout,
+                     NSIndexPath *indexPath) {
+
+    if ([DKHiddenPaths(self) containsObject:indexPath]) {
+        return CGSizeMake(0.1, 0.1);
+    }
+
+    return ((CGSize(*)(id,SEL,id,id,id))
+        gSizeOriginal)(self,
+                       _cmd,
+                       collectionView,
+                       layout,
+                       indexPath);
+}
+
+static BOOL DKMethodIsDirect(Class cls, SEL selector) {
+    unsigned int count = 0;
+    Method *methods =
+        class_copyMethodList(cls, &count);
+
+    BOOL found = NO;
+
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) {
+            found = YES;
+            break;
         }
     }
+
+    free(methods);
+    return found;
 }
 
-static void DKMenuAdded(id self, SEL _cmd) {
-    if (DKMenuAddedOriginal) {
-        ((void(*)(id,SEL))
-            DKMenuAddedOriginal)(self, _cmd);
-    }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if ([self respondsToSelector:@selector(view)]) {
-            UIView *view = [self valueForKey:@"view"];
-            if ([view isKindOfClass:[UIView class]]) {
-                DKHideBlockedToolCells(view);
-            }
-        }
-    });
-}
-
-static Class DKClass(NSArray<NSString *> *names) {
-    for (NSString *name in names) {
-        Class cls = NSClassFromString(name);
-        if (cls) return cls;
-    }
-    return Nil;
-}
-
-static IMP DKReplaceDirectOrAdd(Class cls,
-                                SEL selector,
-                                IMP replacement) {
+static IMP DKHook(Class cls,
+                  SEL selector,
+                  IMP replacement) {
 
     if (!cls) return NULL;
 
@@ -543,47 +596,42 @@ static IMP DKReplaceDirectOrAdd(Class cls,
     const char *types =
         method_getTypeEncoding(method);
 
-    class_addMethod(cls,
-                    selector,
-                    replacement,
-                    types);
+    if (!DKMethodIsDirect(cls, selector)) {
+        if (class_addMethod(cls,
+                            selector,
+                            replacement,
+                            types)) {
+            return original;
+        }
+    }
 
-    Method direct =
-        class_getInstanceMethod(cls, selector);
-
-    method_setImplementation(direct,
-                             replacement);
+    method_setImplementation(
+        class_getInstanceMethod(cls, selector),
+        replacement
+    );
 
     return original;
 }
 
+static Class DKClass(NSArray<NSString *> *names) {
+    for (NSString *name in names) {
+        Class cls = NSClassFromString(name);
+        if (cls) return cls;
+    }
+    return Nil;
+}
+
 static void DKInstallHooks(void) {
-
-    Class renderer =
-        DKClass(@[
-            @"SKKeyboardKeyRenderer",
-            @"SKKit.SKKeyboardKeyRenderer"
-        ]);
-
-    SEL spaceSelector =
-        NSSelectorFromString(
-            @"drawSpaceKey:withImage:enabledLangText:inFrame:inContext:attribute:");
-
-    DKSpaceOriginal =
-        DKReplaceDirectOrAdd(renderer,
-                             spaceSelector,
-                             (IMP)DKDrawSpace);
-
     Class toolbar =
         DKClass(@[
             @"SKCandidateToolbarView",
             @"SKKit.SKCandidateToolbarView"
         ]);
 
-    DKToolbarLayoutOriginal =
-        DKReplaceDirectOrAdd(toolbar,
-                             @selector(layoutSubviews),
-                             (IMP)DKToolbarLayout);
+    gToolbarLayoutOriginal =
+        DKHook(toolbar,
+               @selector(layoutSubviews),
+               (IMP)DKToolbarLayout);
 
     Class menu =
         DKClass(@[
@@ -591,10 +639,15 @@ static void DKInstallHooks(void) {
             @"SKKit.SKToolBarMenuController"
         ]);
 
-    DKMenuAddedOriginal =
-        DKReplaceDirectOrAdd(menu,
-                             @selector(moduleWasAdded),
-                             (IMP)DKMenuAdded);
+    gCellOriginal =
+        DKHook(menu,
+               @selector(collectionView:cellForItemAtIndexPath:),
+               (IMP)DKCell);
+
+    gSizeOriginal =
+        DKHook(menu,
+               @selector(collectionView:layout:sizeForItemAtIndexPath:),
+               (IMP)DKSize);
 }
 
 __attribute__((constructor))
