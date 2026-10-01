@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+// DeafKey standalone host v0.3
 
 @interface DKAppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
