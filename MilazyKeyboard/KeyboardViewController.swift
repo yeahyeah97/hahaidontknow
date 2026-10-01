@@ -1,14 +1,15 @@
 import UIKit
 
 final class KeyboardViewController: UIInputViewController {
-    private enum Page { case letters, numbers, symbols }
+    private enum Page { case letters, numbers, symbols, emoji }
+    private enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
 
-    private let root = UIStackView()
     private let predictionBar = UIStackView()
-    private let keyArea = UIStackView()
+    private let keyCanvas = UIView()
     private var page: Page = .letters
     private var shifted = true
     private var predictionButtons: [UIButton] = []
+    private var laidOutKeys: [(TouchKey, CGRect)] = []
     private var cachedCorrection: (word: String, replacement: String)?
     private var predictionGeneration = 0
 
@@ -27,32 +28,49 @@ final class KeyboardViewController: UIInputViewController {
         ["_","\\","|","~","<",">","$","£","¥","•"],
         [".",",","?","!","'"]
     ]
+    private let emojiRows = [
+        ["😀","😂","🥹","😍","🥰","😎","😭","😡","👍","❤️"],
+        ["🤣","😊","😉","😘","🤔","😴","🤯","🙏","🔥","✨"],
+        ["😅","😇","🙂","🙃","😋","😜","🤓","🥳","💀","💯"]
+    ]
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        preferredContentSize = CGSize(width: 0, height: 347.0)
-        build()
+        preferredContentSize = CGSize(width: 0, height: 330)
+        view.clipsToBounds = false
+        buildChrome()
         rebuildKeys()
         updateAppearance()
         refreshPredictions()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let referenceWidth: CGFloat = 428
+        let sx = keyCanvas.bounds.width / referenceWidth
+        for (button, reference) in laidOutKeys {
+            button.frame = CGRect(
+                x: reference.minX * sx,
+                y: reference.minY,
+                width: reference.width * sx,
+                height: reference.height
+            ).integral
+        }
+    }
+
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        updateReturnKey()
         updateAppearance()
         refreshPredictions()
     }
 
-    private func build() {
-        root.axis = .vertical
-        root.spacing = 7
-        root.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(root)
-
+    private func buildChrome() {
         predictionBar.axis = .horizontal
         predictionBar.distribution = .fillEqually
         predictionBar.spacing = 0
-        predictionBar.heightAnchor.constraint(equalToConstant: 52).isActive = true
+        predictionBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(predictionBar)
 
         for index in 0..<3 {
             let button = UIButton(type: .system)
@@ -61,14 +79,14 @@ final class KeyboardViewController: UIInputViewController {
             button.addTarget(self, action: #selector(usePrediction(_:)), for: .touchUpInside)
             if index > 0 {
                 let separator = UIView()
-                separator.backgroundColor = UIColor.separator.withAlphaComponent(0.35)
+                separator.backgroundColor = UIColor.separator.withAlphaComponent(0.32)
                 separator.translatesAutoresizingMaskIntoConstraints = false
                 button.addSubview(separator)
                 NSLayoutConstraint.activate([
                     separator.leadingAnchor.constraint(equalTo: button.leadingAnchor),
                     separator.centerYAnchor.constraint(equalTo: button.centerYAnchor),
                     separator.widthAnchor.constraint(equalToConstant: 0.5),
-                    separator.heightAnchor.constraint(equalToConstant: 26)
+                    separator.heightAnchor.constraint(equalToConstant: 49)
                 ])
             }
             predictionButtons.append(button)
@@ -78,123 +96,184 @@ final class KeyboardViewController: UIInputViewController {
         let aiGesture = UILongPressGestureRecognizer(target: self, action: #selector(showAITools(_:)))
         predictionBar.addGestureRecognizer(aiGesture)
 
-        keyArea.axis = .vertical
-        keyArea.spacing = 11
-        keyArea.distribution = .fill
-
-        root.addArrangedSubview(predictionBar)
-        root.addArrangedSubview(keyArea)
+        keyCanvas.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(keyCanvas)
 
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            root.topAnchor.constraint(equalTo: view.topAnchor),
-            root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4)
+            predictionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            predictionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
+            predictionBar.heightAnchor.constraint(equalToConstant: 56),
+
+            keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            keyCanvas.topAnchor.constraint(equalTo: view.topAnchor, constant: 76.33),
+            keyCanvas.heightAnchor.constraint(equalToConstant: 213)
         ])
     }
 
     private func rebuildKeys() {
-        keyArea.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let rows = page == .letters ? letterRows : (page == .numbers ? numberRows : symbolRows)
+        keyCanvas.subviews.forEach { $0.removeFromSuperview() }
+        laidOutKeys.removeAll()
 
-        for (index, row) in rows.enumerated() {
-            let stack = UIStackView()
-            stack.axis = .horizontal
-            stack.spacing = 6
-            stack.distribution = .fill
-            stack.heightAnchor.constraint(equalToConstant: 45).isActive = true
+        switch page {
+        case .letters:
+            buildLetters()
+        case .numbers:
+            buildNumbers(symbols: false)
+        case .symbols:
+            buildNumbers(symbols: true)
+        case .emoji:
+            buildEmoji()
+        }
+        updateReturnKey()
+        updateAppearance()
+        view.setNeedsLayout()
+    }
 
-            if page == .letters {
-                if index == 0 {
-                    addSpacer(6.67, to: stack)
-                    row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
-                    addSpacer(6.67, to: stack)
-                } else if index == 1 {
-                    addSpacer(28, to: stack)
-                    row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
-                    addSpacer(28, to: stack)
-                } else {
-                    addSpacer(6.67, to: stack)
-                    addFixedKey("⇧", width: 50, action: #selector(toggleShift), to: stack)
-                    addSpacer(8.67, to: stack)
-                    row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
-                    addSpacer(8.67, to: stack)
-                    addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
-                    addSpacer(6.67, to: stack)
-                }
-            } else if index < 2 {
-                addSpacer(6.67, to: stack)
-                row.forEach { addFixedKey($0, width: 37.33, action: #selector(characterKey(_:)), to: stack) }
-                addSpacer(6.67, to: stack)
-            } else {
-                addSpacer(6.67, to: stack)
-                addFixedKey(page == .numbers ? "#+=" : "123", width: 50, action: #selector(toggleSymbols), to: stack)
-                addSpacer(8.67, to: stack)
-                row.forEach { addFixedKey($0, width: 50.67, action: #selector(characterKey(_:)), to: stack) }
-                addSpacer(8.67, to: stack)
-                addFixedKey("⌫", width: 50, action: #selector(backspaceDown), to: stack)
-                addSpacer(6.67, to: stack)
-            }
-            keyArea.addArrangedSubview(stack)
+    private func buildLetters() {
+        let normalW: CGFloat = 37.33
+        let keyH: CGFloat = 45
+        let step: CGFloat = 43.33
+
+        for (i, title) in letterRows[0].enumerated() {
+            addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: 0, width: normalW, height: keyH), #selector(characterKey(_:)))
         }
 
-        let bottom = UIStackView()
-        bottom.axis = .horizontal
-        bottom.spacing = 6
-        bottom.distribution = .fill
-        bottom.heightAnchor.constraint(equalToConstant: 45).isActive = true
-        addSpacer(6.67, to: bottom)
-        addFixedKey(page == .letters ? "123" : "ABC", width: 48, action: #selector(toggleNumbers), to: bottom)
-        addFixedKey("☺", width: 48, action: #selector(emojiHint), to: bottom)
-        addFixedKey(page == .letters ? "Italiano e English" : "space", width: 210.67, action: #selector(spaceDown), to: bottom)
-        addFixedKey("↵", width: 102.33, action: #selector(returnDown), to: bottom)
-        addSpacer(6.67, to: bottom)
-        keyArea.addArrangedSubview(bottom)
-        updateAppearance()
+        for (i, title) in letterRows[1].enumerated() {
+            addKey(title, CGRect(x: 22 + CGFloat(i) * step, y: 56, width: normalW, height: keyH), #selector(characterKey(_:)))
+        }
+
+        addKey("⇧", CGRect(x: 0.67, y: 112, width: 50, height: keyH), #selector(toggleShift), role: .shift)
+        for (i, title) in letterRows[2].enumerated() {
+            addKey(title, CGRect(x: 65.33 + CGFloat(i) * step, y: 112, width: normalW, height: keyH), #selector(characterKey(_:)))
+        }
+        addKey("⌫", CGRect(x: 377.33, y: 112, width: 50.33, height: keyH), #selector(backspaceDown), role: .delete)
+
+        buildBottomRow(modeTitle: "123", spaceTitle: "")
     }
 
-    private func addFixedKey(_ title: String, width: CGFloat, action: Selector, to stack: UIStackView) {
-        let button = makeKey(title, action)
-        button.widthAnchor.constraint(equalToConstant: width).isActive = true
-        stack.addArrangedSubview(button)
+    private func buildNumbers(symbols: Bool) {
+        let rows = symbols ? symbolRows : numberRows
+        let normalW: CGFloat = 37.33
+        let keyH: CGFloat = 45
+        let step: CGFloat = 43.33
+
+        for (i, title) in rows[0].enumerated() {
+            addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: 0, width: normalW, height: keyH), #selector(characterKey(_:)))
+        }
+        for (i, title) in rows[1].enumerated() {
+            addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: 56, width: normalW, height: keyH), #selector(characterKey(_:)))
+        }
+
+        addKey(symbols ? "123" : "#+=", CGRect(x: 0.67, y: 112, width: 50, height: keyH), #selector(toggleSymbols), role: .mode)
+        let punctuationW: CGFloat = 54.67
+        let punctuationX: [CGFloat] = [65.33, 126, 186.67, 247.33, 308]
+        for (i, title) in rows[2].enumerated() {
+            addKey(title, CGRect(x: punctuationX[i], y: 112, width: punctuationW, height: keyH), #selector(characterKey(_:)))
+        }
+        addKey("⌫", CGRect(x: 377.33, y: 112, width: 50.33, height: keyH), #selector(backspaceDown), role: .delete)
+
+        buildBottomRow(modeTitle: "ABC", spaceTitle: "space")
     }
 
-    private func addSpacer(_ width: CGFloat, to stack: UIStackView) {
-        let spacer = UIView()
-        spacer.widthAnchor.constraint(equalToConstant: width).isActive = true
-        stack.addArrangedSubview(spacer)
+    private func buildEmoji() {
+        let keyH: CGFloat = 45
+        let normalW: CGFloat = 37.33
+        let step: CGFloat = 43.33
+
+        for row in 0..<3 {
+            for (i, title) in emojiRows[row].enumerated() {
+                addKey(title, CGRect(x: 0.67 + CGFloat(i) * step, y: CGFloat(row) * 56, width: normalW, height: keyH), #selector(characterKey(_:)))
+            }
+        }
+        buildBottomRow(modeTitle: "ABC", spaceTitle: "space")
     }
 
-    private func makeKey(_ title: String, _ action: Selector) -> TouchKey {
+    private func buildBottomRow(modeTitle: String, spaceTitle: String) {
+        let y: CGFloat = 168
+        let h: CGFloat = 45
+        addKey(modeTitle, CGRect(x: 0.67, y: y, width: 48, height: h), #selector(toggleNumbers), role: .mode)
+        addKey("☺", CGRect(x: 54.67, y: y, width: 48, height: h), #selector(emojiDown), role: .emoji)
+        addKey(spaceTitle, CGRect(x: 108.67, y: y, width: 210.67, height: h), #selector(spaceDown), role: .space)
+        addKey("↵", CGRect(x: 325.33, y: y, width: 102.33, height: h), #selector(returnDown), role: .returnKey)
+    }
+
+    private func addKey(_ title: String, _ frame: CGRect, _ action: Selector, role: KeyRole = .normal) {
         let button = TouchKey(type: .system)
         button.setTitle(title, for: .normal)
+        button.referenceRole = role
         button.titleLabel?.font = .systemFont(ofSize: title.count == 1 ? 21 : 16)
-        button.layer.cornerRadius = 6
+        button.layer.cornerRadius = 5.5
         button.addTarget(self, action: action, for: .touchDown)
-        if action == #selector(backspaceDown) {
+
+        if role == .delete {
             let hold = UILongPressGestureRecognizer(target: self, action: #selector(backspaceHold(_:)))
             hold.minimumPressDuration = 0.32
             button.addGestureRecognizer(hold)
         }
-        return button
+
+        if role == .space && page == .letters {
+            let badge = UILabel()
+            badge.text = "IT EN"
+            badge.font = .systemFont(ofSize: 11)
+            badge.textColor = UIColor.white.withAlphaComponent(0.38)
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -5),
+                badge.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
+            ])
+        }
+
+        keyCanvas.addSubview(button)
+        laidOutKeys.append((button, frame))
+    }
+
+    private func updateReturnKey() {
+        guard let button = laidOutKeys.map({ $0.0 }).first(where: { $0.referenceRole == .returnKey }) else { return }
+        let type = textDocumentProxy.returnKeyType
+        let title: String
+        switch type {
+        case .done: title = "✓"
+        case .go: title = "Go"
+        case .google: title = "Google"
+        case .join: title = "Join"
+        case .next: title = "Next"
+        case .route: title = "Route"
+        case .search: title = "Search"
+        case .send: title = "Send"
+        case .yahoo: title = "Yahoo"
+        case .emergencyCall: title = "Emergency"
+        case .continue: title = "Continue"
+        default: title = "↵"
+        }
+        button.setTitle(title, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: title.count == 1 ? 24 : 16, weight: .regular)
     }
 
     private func updateAppearance() {
         let dark = textDocumentProxy.keyboardAppearance == .dark || traitCollection.userInterfaceStyle == .dark
-        view.backgroundColor = dark ? UIColor(white: 31.0 / 255.0, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
-        predictionBar.backgroundColor = dark ? UIColor(white: 31.0 / 255.0, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
+        let background = dark ? UIColor(white: 31.0 / 255.0, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
+        let keyColor = dark ? UIColor(white: 72.0 / 255.0, alpha: 1) : .white
+        view.backgroundColor = background
+        predictionBar.backgroundColor = background
 
         for button in predictionButtons {
             button.setTitleColor(dark ? .white : .label, for: .normal)
         }
-        for case let button as TouchKey in allSubviews(keyArea) {
-            button.backgroundColor = dark ? UIColor(white: 0.28, alpha: 1) : .white
-            button.setTitleColor(dark ? .white : .black, for: .normal)
-        }
-    }
 
-    private func allSubviews(_ view: UIView) -> [UIView] {
-        view.subviews + view.subviews.flatMap(allSubviews)
+        let returnType = textDocumentProxy.returnKeyType
+        let blueReturn = returnType != .default
+        for (button, _) in laidOutKeys {
+            if button.referenceRole == .returnKey && blueReturn {
+                button.backgroundColor = UIColor.systemBlue
+                button.setTitleColor(.white, for: .normal)
+            } else {
+                button.backgroundColor = keyColor
+                button.setTitleColor(dark ? .white : .black, for: .normal)
+            }
+        }
     }
 
     @objc private func characterKey(_ sender: UIButton) {
@@ -203,7 +282,6 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(value)
         if page == .letters && shifted {
             shifted = false
-            rebuildKeys()
         }
         schedulePredictionRefresh()
     }
@@ -240,21 +318,24 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func toggleShift() {
         shifted.toggle()
-        rebuildKeys()
     }
 
     @objc private func toggleNumbers() {
         page = page == .letters ? .numbers : .letters
         rebuildKeys()
+        refreshPredictions()
     }
 
     @objc private func toggleSymbols() {
         page = page == .symbols ? .numbers : .symbols
         rebuildKeys()
+        refreshPredictions()
     }
 
-    @objc private func emojiHint() {
-        advanceToNextInputMode()
+    @objc private func emojiDown() {
+        page = page == .emoji ? .letters : .emoji
+        rebuildKeys()
+        refreshPredictions()
     }
 
     private func schedulePredictionRefresh() {
@@ -278,7 +359,8 @@ final class KeyboardViewController: UIInputViewController {
             cachedCorrection = nil
             return
         }
-        guard let word = currentWord(), word.count >= 1 else {
+
+        guard let word = currentWord(), !word.isEmpty else {
             setPredictions(["I", "The", "You"])
             cachedCorrection = nil
             return
@@ -293,24 +375,20 @@ final class KeyboardViewController: UIInputViewController {
             let checker = UITextChecker()
             let ns = sourceWord as NSString
             let range = NSRange(location: 0, length: ns.length)
-            let misspelled = checker.rangeOfMisspelledWord(
-                in: sourceWord,
-                range: range,
-                startingAt: 0,
-                wrap: false,
-                language: language
-            )
+            let misspelled = checker.rangeOfMisspelledWord(in: sourceWord, range: range, startingAt: 0, wrap: false, language: language)
             let guesses = misspelled.location != NSNotFound
                 ? (checker.guesses(forWordRange: misspelled, in: sourceWord, language: language) ?? [])
                 : []
             let correction = guesses.first
             let completions = checker.completions(forPartialWordRange: range, in: sourceWord, language: language) ?? []
+
             var choices: [String] = []
             if let correction, correction.caseInsensitiveCompare(sourceWord) != .orderedSame {
                 choices.append(correction)
             }
             choices.append(sourceWord)
-            for item in (guesses.dropFirst() + completions) where !choices.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
+            for item in (guesses.dropFirst() + completions)
+            where !choices.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
                 choices.append(item)
                 if choices.count == 3 { break }
             }
@@ -318,8 +396,7 @@ final class KeyboardViewController: UIInputViewController {
 
             DispatchQueue.main.async {
                 guard let self, self.predictionGeneration == generation, self.currentWord() == sourceWord else { return }
-                if let correction { self.cachedCorrection = (sourceWord, correction) }
-                else { self.cachedCorrection = nil }
+                self.cachedCorrection = correction.map { (sourceWord, $0) }
                 self.setPredictions(Array(choices.prefix(3)))
             }
         }
@@ -380,6 +457,8 @@ final class KeyboardViewController: UIInputViewController {
 }
 
 final class TouchKey: UIButton {
+    var referenceRole: KeyboardViewController.KeyRole = .normal
+
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: -3, dy: -4).contains(point)
     }
