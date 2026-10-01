@@ -5,7 +5,7 @@ options:
     iOS: '16.0'
 targets:
   MilazyKeyboard:
-    type: app
+    type: application
     platform: iOS
     sources: [MilazyApp, Shared]
     settings:
