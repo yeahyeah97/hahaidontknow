@@ -42,10 +42,10 @@ jobs:
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry MilazyKeyboard_V3_0_0_unsigned.ipa Payload
+          zip -qry MilazyKeyboard_V3_1_0_unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MilazyKeyboard_V3_0_0_unsigned
-          path: MilazyKeyboard_V3_0_0_unsigned.ipa
+          name: MilazyKeyboard_V3_1_0_unsigned
+          path: MilazyKeyboard_V3_1_0_unsigned.ipa
           if-no-files-found: error
