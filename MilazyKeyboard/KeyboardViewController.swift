@@ -271,7 +271,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             }
             button.onFingerMoved = { [weak self] key, point, original in
                 guard let self else { return }
-                let resolved = self.resolvedNormalKey(at: point) ?? key
+                let resolved = self.resolvedNormalKey(at: point, source: key) ?? key
                 let display = self.destinationText(for: resolved, matchingCaseOf: original)
                 self.showPreview(for: resolved, text: display)
             }
@@ -317,41 +317,96 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         return value
     }
 
-    private func resolvedNormalKey(at point: CGPoint) -> TouchKey? {
+    private func resolvedNormalKey(at point: CGPoint, source: TouchKey? = nil) -> TouchKey? {
         let keys = laidOutKeys.map { $0.0 }.filter {
             $0.referenceRole == .normal && !$0.isHidden && $0.alpha > 0.01
         }
+        guard !keys.isEmpty else { return nil }
 
-        if let direct = keys.first(where: { $0.frame.contains(point) }) {
-            return direct
+        // Group visual rows first so staggered rows do not steal taps too easily.
+        let sorted = keys.sorted { $0.frame.midY < $1.frame.midY }
+        var rows: [[TouchKey]] = []
+        for key in sorted {
+            if let first = rows.last?.first,
+               abs(first.frame.midY - key.frame.midY) < 12 {
+                rows[rows.count - 1].append(key)
+            } else {
+                rows.append([key])
+            }
         }
 
-        let candidates = keys.filter { $0.frame.insetBy(dx: -7, dy: -6).contains(point) }
-        guard !candidates.isEmpty else { return nil }
+        guard let chosenRow = rows.min(by: { lhs, rhs in
+            let ly = lhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(lhs.count)
+            let ry = rhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(rhs.count)
+            let ldist = abs(point.y - ly)
+            let rdist = abs(point.y - ry)
 
-        return candidates.min { lhs, rhs in
-            let lc = lhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame) }
-                ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
-            let rc = rhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame) }
-                ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
+            // Slight vertical stickiness: if the finger is close to the source row,
+            // do not jump rows just because it crossed the mathematical midpoint.
+            if let source {
+                let sourceY = source.frame.midY
+                if abs(point.y - sourceY) < 34 {
+                    if abs(ly - sourceY) < 12 { return true }
+                    if abs(ry - sourceY) < 12 { return false }
+                }
+            }
+
+            return ldist < rdist
+        }) else { return nil }
+
+        return chosenRow.min { lhs, rhs in
+            let lc = lhs.learningKey.map {
+                TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame)
+            } ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
+
+            let rc = rhs.learningKey.map {
+                TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame)
+            } ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
 
             let ldx = point.x - lc.x
             let ldy = point.y - lc.y
             let rdx = point.x - rc.x
             let rdy = point.y - rc.y
-            return ldx * ldx + 1.55 * ldy * ldy < rdx * rdx + 1.55 * rdy * rdy
+
+            var lscore = ldx * ldx + 0.22 * ldy * ldy
+            var rscore = rdx * rdx + 0.22 * rdy * rdy
+
+            // Bigger invisible hitbox than the visible cap.
+            // This deliberately overlaps neighboring caps a little.
+            let lComfort = lhs.frame.insetBy(dx: -8.5, dy: -9.0)
+            let rComfort = rhs.frame.insetBy(dx: -8.5, dy: -9.0)
+            if lComfort.contains(point) { lscore -= 42 }
+            if rComfort.contains(point) { rscore -= 42 }
+
+            // Hysteresis: while sliding, the source key keeps a small advantage
+            // until the finger has clearly entered a neighbor's zone.
+            if let source {
+                if lhs === source { lscore -= 34 }
+                if rhs === source { rscore -= 34 }
+            }
+
+            return lscore < rscore
         }
     }
 
     private func finalizeOptimisticTouch(from source: TouchKey, point: CGPoint, insertedText: String) {
         guard source.referenceRole == .normal,
-              let destination = resolvedNormalKey(at: point),
+              let destination = resolvedNormalKey(at: point, source: source),
               destination !== source else {
             return
         }
 
         let replacement = destinationText(for: destination, matchingCaseOf: insertedText)
         guard replacement != insertedText else { return }
+
+        let sourceCenter = CGPoint(x: source.frame.midX, y: source.frame.midY)
+        let destinationCenter = CGPoint(x: destination.frame.midX, y: destination.frame.midY)
+        let sourceDistance = hypot(point.x - sourceCenter.x, point.y - sourceCenter.y)
+        let destinationDistance = hypot(point.x - destinationCenter.x, point.y - destinationCenter.y)
+
+        // Do not flip a character on tiny release jitter. The destination has to be
+        // meaningfully closer than the source, which feels much more like iOS/Gboard.
+        guard destinationDistance + 4.0 < sourceDistance else { return }
 
         // The original key was already inserted on touch-down for minimum latency.
         // Correct only the last character if the finger clearly finishes on another cap.
@@ -1133,11 +1188,6 @@ final class KeyCanvasView: UIView {
             return nil
         }
 
-        // Exact visible-key hit always wins.
-        if let direct = super.hitTest(point, with: event) as? TouchKey {
-            return direct
-        }
-
         let keys = subviews.compactMap { $0 as? TouchKey }.filter {
             !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled
         }
@@ -1145,14 +1195,11 @@ final class KeyCanvasView: UIView {
             return super.hitTest(point, with: event)
         }
 
-        // Build logical rows by their visual center. Each entire row becomes a continuous
-        // invisible touch band, so there are no dead horizontal gaps between caps.
         let sorted = keys.sorted { $0.frame.midY < $1.frame.midY }
         var rows: [[TouchKey]] = []
 
         for key in sorted {
-            if let last = rows.last,
-               let anchor = last.first,
+            if let anchor = rows.last?.first,
                abs(anchor.frame.midY - key.frame.midY) < 12 {
                 rows[rows.count - 1].append(key)
             } else {
@@ -1160,8 +1207,6 @@ final class KeyCanvasView: UIView {
             }
         }
 
-        // Pick the nearest row vertically. The 213pt key canvas contains only key rows/gaps,
-        // so even a tap in the vertical gutter is intentionally assigned to a row.
         guard let row = rows.min(by: { lhs, rhs in
             let ly = lhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(lhs.count)
             let ry = rhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(rhs.count)
@@ -1170,8 +1215,9 @@ final class KeyCanvasView: UIView {
             return super.hitTest(point, with: event)
         }
 
-        // Within that row, use the user's learned landing centers. This creates large
-        // Voronoi-like hitboxes whose boundary sits halfway between neighboring keys.
+        // Bigger invisible target than the cap itself. Instead of hard-locking a tap
+        // merely because it landed one or two pixels inside a neighboring cap, score
+        // all keys in the selected row and favor the user's learned landing center.
         return row.min { lhs, rhs in
             let lc = lhs.learningKey.map {
                 TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame)
@@ -1186,8 +1232,14 @@ final class KeyCanvasView: UIView {
             let rdx = point.x - rc.x
             let rdy = point.y - rc.y
 
-            // Horizontal distance matters most inside a selected row.
-            return ldx * ldx + 0.35 * ldy * ldy < rdx * rdx + 0.35 * rdy * rdy
+            var lscore = ldx * ldx + 0.22 * ldy * ldy
+            var rscore = rdx * rdx + 0.22 * rdy * rdy
+
+            // ~8.5pt horizontal and 9pt vertical invisible expansion.
+            if lhs.frame.insetBy(dx: -8.5, dy: -9).contains(point) { lscore -= 42 }
+            if rhs.frame.insetBy(dx: -8.5, dy: -9).contains(point) { rscore -= 42 }
+
+            return lscore < rscore
         }
     }
 }
