@@ -996,12 +996,18 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     @objc private func aiTapped() {
-        showAIPanel()
+        if AIService.shared.hasAPIKey {
+            runAI(.fix)
+        } else {
+            showAIPanel()
+        }
     }
 
-    @objc private func showAITools(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        showAIPanel()
+    @objc private func menuTapped() {
+        toolPanel = .menu
+        keyCanvas.isHidden = true
+        aiPanel.isHidden = false
+        rebuildAIPanel()
     }
 
     private func showAIPanel() {
