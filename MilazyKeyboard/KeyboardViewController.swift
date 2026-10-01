@@ -1,7 +1,7 @@
 import UIKit
 import NaturalLanguage
 
-final class KeyboardViewController: UIInputViewController {
+final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     private enum Page { case letters, numbers, symbols, emoji }
     fileprivate enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
 
@@ -16,6 +16,11 @@ final class KeyboardViewController: UIInputViewController {
     private var laidOutKeys: [(TouchKey, CGRect)] = []
     private var cachedCorrection: (word: String, replacement: String)?
     private var predictionGeneration = 0
+    private var supplementaryEntries: [UILexiconEntry] = []
+    private var backspaceTimer: Timer?
+    private var lastSpaceTap: TimeInterval = 0
+
+    var enableInputClicksWhenVisible: Bool { true }
 
     private let letterRows = [
         ["Q","W","E","R","T","Y","U","I","O","P"],
@@ -48,6 +53,12 @@ final class KeyboardViewController: UIInputViewController {
         buildChrome()
         rebuildKeys()
         updateAppearance()
+        requestSupplementaryLexicon { [weak self] lexicon in
+            DispatchQueue.main.async {
+                self?.supplementaryEntries = lexicon.entries
+                self?.refreshPredictions()
+            }
+        }
         refreshPredictions()
     }
 
@@ -69,6 +80,7 @@ final class KeyboardViewController: UIInputViewController {
         super.textDidChange(textInput)
         updateReturnKey()
         updateAppearance()
+        syncAutoCapitalization()
         refreshPredictions()
     }
 
@@ -226,6 +238,9 @@ final class KeyboardViewController: UIInputViewController {
         let button = TouchKey(type: .system)
         button.setTitle(title, for: .normal)
         button.referenceRole = role
+        if role == .normal && page != .emoji {
+            button.learningKey = title.lowercased()
+        }
 
         switch role {
         case .emoji:
@@ -325,10 +340,39 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    private func playKeyFeedback() {
+        UIDevice.current.playInputClick()
+    }
+
+    private func syncAutoCapitalization() {
+        guard page == .letters,
+              textDocumentProxy.autocapitalizationType != .none else { return }
+
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let shouldShift = context.isEmpty
+            || context.hasSuffix("\n")
+            || context.hasSuffix(". ")
+            || context.hasSuffix("! ")
+            || context.hasSuffix("? ")
+
+        if shouldShift && !shifted {
+            shifted = true
+            refreshLetterCaps()
+        }
+    }
+
+    private func canInsertDoubleSpacePeriod(in context: String) -> Bool {
+        guard context.hasSuffix(" ") else { return false }
+        let beforeSpace = context.dropLast()
+        guard let last = beforeSpace.last else { return false }
+        return last.isLetter || last.isNumber
+    }
+
     @objc private func characterKey(_ sender: UIButton) {
         guard var value = sender.currentTitle else { return }
         if page == .letters && !shifted { value = value.lowercased() }
         textDocumentProxy.insertText(value)
+        playKeyFeedback()
         if page == .letters && shifted {
             shifted = false
             DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
@@ -338,18 +382,47 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func backspaceDown() {
         textDocumentProxy.deleteBackward()
+        playKeyFeedback()
         schedulePredictionRefresh()
     }
 
     @objc private func backspaceHold(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .began || gesture.state == .changed {
+        switch gesture.state {
+        case .began:
+            backspaceTimer?.invalidate()
             textDocumentProxy.deleteBackward()
+            playKeyFeedback()
             schedulePredictionRefresh()
+
+            backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.075, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.textDocumentProxy.deleteBackward()
+                self.playKeyFeedback()
+            }
+        case .ended, .cancelled, .failed:
+            backspaceTimer?.invalidate()
+            backspaceTimer = nil
+            schedulePredictionRefresh()
+        default:
+            break
         }
     }
 
     @objc private func spaceDown() {
+        let now = Date.timeIntervalSinceReferenceDate
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
+
+        if now - lastSpaceTap < 0.48, canInsertDoubleSpacePeriod(in: context) {
+            textDocumentProxy.deleteBackward()
+            textDocumentProxy.insertText(". ")
+            playKeyFeedback()
+            lastSpaceTap = 0
+            shifted = true
+            DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
+            schedulePredictionRefresh()
+            return
+        }
+
         let previous = previousWord(in: context)
         var committed = currentWord()
 
@@ -363,9 +436,15 @@ final class KeyboardViewController: UIInputViewController {
 
         if let committed {
             LocalLanguageModel.shared.learn(word: committed, previous: previous)
+            if LocalLanguageModel.shared.frequency(of: committed) >= 2,
+               !UITextChecker.hasLearnedWord(committed) {
+                UITextChecker.learnWord(committed)
+            }
         }
 
         textDocumentProxy.insertText(" ")
+        playKeyFeedback()
+        lastSpaceTap = now
         shifted = false
         schedulePredictionRefresh()
     }
@@ -374,8 +453,13 @@ final class KeyboardViewController: UIInputViewController {
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
         if let current = currentWord() {
             LocalLanguageModel.shared.learn(word: current, previous: previousWord(in: context))
+            if LocalLanguageModel.shared.frequency(of: current) >= 2,
+               !UITextChecker.hasLearnedWord(current) {
+                UITextChecker.learnWord(current)
+            }
         }
         textDocumentProxy.insertText("\n")
+        playKeyFeedback()
         shifted = true
         DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
         schedulePredictionRefresh()
@@ -383,6 +467,7 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func toggleShift() {
         shifted.toggle()
+        playKeyFeedback()
         refreshLetterCaps()
     }
 
@@ -401,18 +486,21 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func toggleNumbers() {
+        playKeyFeedback()
         page = page == .letters ? .numbers : .letters
         rebuildKeys()
         refreshPredictions()
     }
 
     @objc private func toggleSymbols() {
+        playKeyFeedback()
         page = page == .symbols ? .numbers : .symbols
         rebuildKeys()
         refreshPredictions()
     }
 
     @objc private func emojiDown() {
+        playKeyFeedback()
         page = page == .emoji ? .letters : .emoji
         rebuildKeys()
         refreshPredictions()
@@ -485,6 +573,15 @@ final class KeyboardViewController: UIInputViewController {
         let generation = predictionGeneration
         let sourceWord = word
         let learned = LocalLanguageModel.shared.completions(prefix: sourceWord, previous: previous, limit: 8)
+        let sourceLower = sourceWord.lowercased()
+        let lexiconCandidates = supplementaryEntries.compactMap { entry -> String? in
+            let input = entry.userInput
+            let output = entry.documentText
+            if input.lowercased() == sourceLower { return output }
+            if input.lowercased().hasPrefix(sourceLower) { return input }
+            if output.lowercased().hasPrefix(sourceLower) { return output }
+            return nil
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let checker = UITextChecker()
@@ -526,6 +623,10 @@ final class KeyboardViewController: UIInputViewController {
             // Personal vocabulary is strongest: if you use a word often, Milazy keeps it.
             for (index, value) in learned.enumerated() {
                 add(value, score: 1500 - index * 30 + LocalLanguageModel.shared.frequency(of: value) * 10)
+            }
+
+            for (index, value) in lexiconCandidates.prefix(8).enumerated() {
+                add(value, score: 1325 - index * 20)
             }
 
             // Exact typed word gets a strong score once learned so names/slang are not "fixed" away.
@@ -817,6 +918,33 @@ final class KeyboardViewController: UIInputViewController {
 
 final class TouchKey: UIButton {
     fileprivate var referenceRole: KeyboardViewController.KeyRole = .normal
+    fileprivate var learningKey: String?
+
+    override var isHighlighted: Bool {
+        didSet {
+            if isHighlighted {
+                transform = CGAffineTransform(scaleX: 0.975, y: 0.975)
+                alpha = 0.82
+            } else {
+                UIView.animate(withDuration: 0.055, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    self.transform = .identity
+                    self.alpha = 1
+                }
+            }
+        }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let key = learningKey,
+           let touch = touches.first,
+           let container = superview {
+            let point = touch.location(in: container)
+            if frame.insetBy(dx: -3, dy: -3).contains(point) {
+                TouchLearningModel.shared.record(key: key, point: point, frame: frame)
+            }
+        }
+        super.touchesBegan(touches, with: event)
+    }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.contains(point)
@@ -849,10 +977,15 @@ final class KeyCanvasView: UIView {
         }
 
         return candidates.min { lhs, rhs in
-            let ldx = point.x - lhs.frame.midX
-            let ldy = point.y - lhs.frame.midY
-            let rdx = point.x - rhs.frame.midX
-            let rdy = point.y - rhs.frame.midY
+            let lc = lhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: lhs.frame) }
+                ?? CGPoint(x: lhs.frame.midX, y: lhs.frame.midY)
+            let rc = rhs.learningKey.map { TouchLearningModel.shared.adjustedCenter(for: $0, frame: rhs.frame) }
+                ?? CGPoint(x: rhs.frame.midX, y: rhs.frame.midY)
+
+            let ldx = point.x - lc.x
+            let ldy = point.y - lc.y
+            let rdx = point.x - rc.x
+            let rdy = point.y - rc.y
             return ldx * ldx + 1.55 * ldy * ldy < rdx * rdx + 1.55 * rdy * rdy
         }
     }
