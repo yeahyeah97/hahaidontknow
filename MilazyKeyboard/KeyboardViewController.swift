@@ -36,7 +36,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        preferredContentSize = CGSize(width: 0, height: 248)
+        preferredContentSize = CGSize(width: 0, height: 244)
         view.clipsToBounds = true
         buildChrome()
         rebuildKeys()
@@ -75,7 +75,7 @@ final class KeyboardViewController: UIInputViewController {
         for index in 0..<3 {
             let button = UIButton(type: .system)
             button.tag = index
-            button.titleLabel?.font = .systemFont(ofSize: 17)
+            button.titleLabel?.font = .systemFont(ofSize: 20)
             button.addTarget(self, action: #selector(usePrediction(_:)), for: .touchUpInside)
             if index > 0 {
                 let separator = UIView()
