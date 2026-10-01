@@ -21,8 +21,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private var lastSpaceTap: TimeInterval = 0
     private let keyHaptic = UIImpactFeedbackGenerator(style: .light)
     private var keyPreview: KeyPreviewView?
+    private enum ToolPanel { case ai, clipboard, settings }
+    private var toolPanel: ToolPanel = .ai
 
-    var enableInputClicksWhenVisible: Bool { true }
+    var enableInputClicksWhenVisible: Bool { KeyboardPreferences.shared.sound }
 
     private let letterRows = [
         ["Q","W","E","R","T","Y","U","I","O","P"],
@@ -47,11 +49,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        preferredContentSize = CGSize(width: 0, height: 255)
-        let nativeHeight = view.heightAnchor.constraint(equalToConstant: 255)
-        nativeHeight.priority = .required
-        nativeHeight.isActive = true
-        view.clipsToBounds = true
+        preferredContentSize = CGSize(width: 0, height: 248)
+        view.clipsToBounds = false
         keyHaptic.prepare()
         buildChrome()
         rebuildKeys()
@@ -69,13 +68,22 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         super.viewDidLayoutSubviews()
         let referenceWidth: CGFloat = 440
         let sx = keyCanvas.bounds.width / referenceWidth
+        let layout = KeyboardPreferences.shared.layoutMode
         for (button, reference) in laidOutKeys {
-            button.frame = CGRect(
+            var frame = CGRect(
                 x: reference.minX * sx,
                 y: reference.minY,
                 width: reference.width * sx,
                 height: reference.height
-            ).integral
+            )
+            if button.referenceRole == .normal {
+                switch layout {
+                case .ios: break
+                case .wide: frame = frame.insetBy(dx: -1.3, dy: -0.5)
+                case .compact: frame = frame.insetBy(dx: 1.4, dy: 0.5)
+                }
+            }
+            button.frame = frame.integral
         }
     }
 
@@ -84,6 +92,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         updateReturnKey()
         updateAppearance()
         syncAutoCapitalization()
+        refreshLetterCaps()
         refreshPredictions()
     }
 
@@ -128,13 +137,13 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
         NSLayoutConstraint.activate([
             predictionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            predictionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            predictionBar.trailingAnchor.constraint(equalTo: aiButton.leadingAnchor, constant: -4),
             predictionBar.topAnchor.constraint(equalTo: view.topAnchor),
             predictionBar.heightAnchor.constraint(equalToConstant: 35),
 
             aiButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
             aiButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
-            aiButton.widthAnchor.constraint(equalToConstant: 30),
+            aiButton.widthAnchor.constraint(equalToConstant: 38),
             aiButton.heightAnchor.constraint(equalToConstant: 24),
 
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -421,7 +430,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func showPreview(for key: TouchKey, text: String) {
-        guard page != .emoji else { return }
+        guard page != .emoji, KeyboardPreferences.shared.keyPopups else { return }
 
         let preview: KeyPreviewView
         if let existing = keyPreview {
@@ -503,14 +512,23 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func playKeyFeedback() {
-        UIDevice.current.playInputClick()
-        keyHaptic.impactOccurred(intensity: 0.32)
-        keyHaptic.prepare()
+        let prefs = KeyboardPreferences.shared
+        if prefs.sound { UIDevice.current.playInputClick() }
+        if prefs.haptics {
+            keyHaptic.impactOccurred(intensity: 0.28)
+            keyHaptic.prepare()
+        }
     }
 
     private func syncAutoCapitalization() {
-        guard page == .letters,
-              textDocumentProxy.autocapitalizationType != .none else { return }
+        guard page == .letters else { return }
+        if textDocumentProxy.autocapitalizationType == UITextAutocapitalizationType.none {
+            if shifted {
+                shifted = false
+                refreshLetterCaps()
+            }
+            return
+        }
 
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
         let shouldShift = context.isEmpty
@@ -519,8 +537,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             || context.hasSuffix("! ")
             || context.hasSuffix("? ")
 
-        if shouldShift && !shifted {
-            shifted = true
+        if shifted != shouldShift {
+            shifted = shouldShift
             refreshLetterCaps()
         }
     }
@@ -533,10 +551,17 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     @objc private func characterKey(_ sender: UIButton) {
-        guard var value = sender.currentTitle else { return }
-        if page == .letters && !shifted { value = value.lowercased() }
+        let key = sender as? TouchKey
+        var value = key?.learningKey ?? sender.currentTitle ?? ""
+        guard !value.isEmpty else { return }
+
+        if page == .letters {
+            value = shifted ? value.uppercased() : value.lowercased()
+        }
+
         textDocumentProxy.insertText(value)
         playKeyFeedback()
+
         if page == .letters && shifted {
             shifted = false
             DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
@@ -595,6 +620,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
            correction.word.caseInsensitiveCompare(current) == .orderedSame,
            correction.replacement.caseInsensitiveCompare(current) != .orderedSame {
             replaceCurrentWord(with: correction.replacement)
+            LocalLanguageModel.shared.learnCorrection(from: current, to: correction.replacement)
             committed = correction.replacement
         }
 
@@ -793,6 +819,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
                 add(value, score: 1325 - index * 20)
             }
 
+            for (value, count) in LocalLanguageModel.shared.learnedCorrections(for: sourceWord, limit: 5) {
+                add(value, score: 1700 + count * 80)
+            }
+
             // Exact typed word gets a strong score once learned so names/slang are not "fixed" away.
             let typedFrequency = LocalLanguageModel.shared.frequency(of: sourceWord)
             add(sourceWord, score: 950 + typedFrequency * 25)
@@ -820,10 +850,16 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
                 // Auto-correct only from the currently dominant language and never override
                 // words the user has already taught Milazy repeatedly.
-                if typedFrequency > 1 {
+                if typedFrequency > 2 {
                     self.cachedCorrection = nil
+                } else if let learnedFix = LocalLanguageModel.shared.learnedCorrections(for: sourceWord, limit: 1).first?.0 {
+                    self.cachedCorrection = (sourceWord, self.matchCase(learnedFix, source: sourceWord))
+                } else if let p = primary.0 {
+                    self.cachedCorrection = (sourceWord, self.matchCase(p, source: sourceWord))
+                } else if let s = secondary.0 {
+                    self.cachedCorrection = (sourceWord, self.matchCase(s, source: sourceWord))
                 } else {
-                    self.cachedCorrection = primary.0.map { (sourceWord, $0) }
+                    self.cachedCorrection = nil
                 }
                 self.setPredictions(choices)
             }
@@ -831,6 +867,12 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func preferredLanguage(for text: String) -> String {
+        switch KeyboardPreferences.shared.languageMode {
+        case .italian: return "it_IT"
+        case .english: return "en_US"
+        case .automatic: break
+        }
+
         let tokens = words(in: text).map { $0.lowercased() }
 
         let italian: Set<String> = [
@@ -878,8 +920,17 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     @objc private func usePrediction(_ sender: UIButton) {
         guard let value = sender.currentTitle, !value.isEmpty else { return }
-        if currentWord() != nil { replaceCurrentWord(with: value) }
-        else { textDocumentProxy.insertText(value) }
+        let before = currentWord()
+        let previous = previousWord(in: textDocumentProxy.documentContextBeforeInput ?? "")
+        if let before {
+            replaceCurrentWord(with: value)
+            if before.caseInsensitiveCompare(value) != .orderedSame {
+                LocalLanguageModel.shared.learnCorrection(from: before, to: value)
+            }
+        } else {
+            textDocumentProxy.insertText(value)
+        }
+        LocalLanguageModel.shared.learn(word: value, previous: previous)
         schedulePredictionRefresh()
     }
 
@@ -899,6 +950,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func showAIPanel() {
+        toolPanel = .ai
         keyCanvas.isHidden = true
         aiPanel.isHidden = false
         rebuildAIPanel()
