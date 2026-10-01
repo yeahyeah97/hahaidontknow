@@ -12,7 +12,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.keyboard
         INFOPLIST_FILE: MilazyApp/Info.plist
-        CODE_SIGN_ENTITLEMENTS: MilazyApp/MilazyApp.entitlements
         CODE_SIGNING_ALLOWED: NO
     dependencies:
       - target: MilazyKeyboardExtension
@@ -24,6 +23,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.keyboard.extension
         INFOPLIST_FILE: MilazyKeyboard/Info.plist
-        CODE_SIGN_ENTITLEMENTS: MilazyKeyboard/MilazyKeyboard.entitlements
         CODE_SIGNING_ALLOWED: NO
         SKIP_INSTALL: YES
