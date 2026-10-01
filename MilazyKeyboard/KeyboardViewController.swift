@@ -36,7 +36,10 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        preferredContentSize = CGSize(width: 0, height: 244)
+        preferredContentSize = CGSize(width: 0, height: 255)
+        let nativeHeight = view.heightAnchor.constraint(equalToConstant: 255)
+        nativeHeight.priority = .required
+        nativeHeight.isActive = true
         view.clipsToBounds = true
         buildChrome()
         rebuildKeys()
@@ -75,7 +78,8 @@ final class KeyboardViewController: UIInputViewController {
         for index in 0..<3 {
             let button = UIButton(type: .system)
             button.tag = index
-            button.titleLabel?.font = .systemFont(ofSize: 20)
+            button.titleLabel?.font = .systemFont(ofSize: 17.5)
+            button.titleEdgeInsets = UIEdgeInsets(top: -9, left: 0, bottom: 9, right: 0)
             button.addTarget(self, action: #selector(usePrediction(_:)), for: .touchUpInside)
             if index > 0 {
                 let separator = UIView()
@@ -204,8 +208,25 @@ final class KeyboardViewController: UIInputViewController {
         let button = TouchKey(type: .system)
         button.setTitle(title, for: .normal)
         button.referenceRole = role
-        button.titleLabel?.font = .systemFont(ofSize: title.count == 1 ? 21 : 16)
-        button.layer.cornerRadius = 5.5
+
+        switch role {
+        case .emoji:
+            button.setTitle(nil, for: .normal)
+            button.setImage(UIImage(systemName: "face.smiling"), for: .normal)
+            button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 21, weight: .regular), forImageIn: .normal)
+        case .delete:
+            button.setTitle(nil, for: .normal)
+            button.setImage(UIImage(systemName: "delete.left"), for: .normal)
+            button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 21, weight: .regular), forImageIn: .normal)
+        case .shift:
+            button.setTitle(nil, for: .normal)
+            button.setImage(UIImage(systemName: shifted ? "shift.fill" : "shift"), for: .normal)
+            button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 21, weight: .regular), forImageIn: .normal)
+        default:
+            break
+        }
+        button.titleLabel?.font = .systemFont(ofSize: title.count == 1 ? 21 : 18)
+        button.layer.cornerRadius = 8
         button.addTarget(self, action: action, for: .touchDown)
 
         if role == .delete {
@@ -255,10 +276,13 @@ final class KeyboardViewController: UIInputViewController {
 
     private func updateAppearance() {
         let dark = textDocumentProxy.keyboardAppearance == .dark || traitCollection.userInterfaceStyle == .dark
-        let background = dark ? UIColor(white: 31.0 / 255.0, alpha: 1) : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1)
-        let keyColor = dark ? UIColor(white: 72.0 / 255.0, alpha: 1) : .white
-        view.backgroundColor = background
-        predictionBar.backgroundColor = background
+        let keyColor = dark ? UIColor(white: 67.0 / 255.0, alpha: 1) : .white
+        view.backgroundColor = .clear
+        inputView?.backgroundColor = .clear
+        view.isOpaque = false
+        inputView?.isOpaque = false
+        predictionBar.backgroundColor = .clear
+        keyCanvas.backgroundColor = .clear
 
         for button in predictionButtons {
             button.setTitleColor(dark ? .white : .label, for: .normal)
@@ -268,11 +292,13 @@ final class KeyboardViewController: UIInputViewController {
         let blueReturn = returnType != .default
         for (button, _) in laidOutKeys {
             if button.referenceRole == .returnKey && blueReturn {
-                button.backgroundColor = UIColor.systemBlue
+                button.backgroundColor = UIColor(red: 52.0 / 255.0, green: 120.0 / 255.0, blue: 247.0 / 255.0, alpha: 1)
                 button.setTitleColor(.white, for: .normal)
+                button.tintColor = .white
             } else {
                 button.backgroundColor = keyColor
                 button.setTitleColor(dark ? .white : .black, for: .normal)
+                button.tintColor = dark ? .white : .black
             }
         }
     }
@@ -327,6 +353,10 @@ final class KeyboardViewController: UIInputViewController {
     private func refreshLetterCaps() {
         guard page == .letters else { return }
         for (button, _) in laidOutKeys {
+            if button.referenceRole == .shift {
+                button.setImage(UIImage(systemName: shifted ? "shift.fill" : "shift"), for: .normal)
+                continue
+            }
             guard let title = button.currentTitle,
                   title.count == 1,
                   title.rangeOfCharacter(from: .letters) != nil else { continue }
