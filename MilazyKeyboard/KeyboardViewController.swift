@@ -281,14 +281,24 @@ final class KeyboardViewController: UIInputViewController {
             let checker = UITextChecker()
             let ns = sourceWord as NSString
             let range = NSRange(location: 0, length: ns.length)
-            let correction = checker.correction(forWordRange: range, in: sourceWord, language: language)
+            let misspelled = checker.rangeOfMisspelledWord(
+                in: sourceWord,
+                range: range,
+                startingAt: 0,
+                wrap: false,
+                language: language
+            )
+            let guesses = misspelled.location != NSNotFound
+                ? (checker.guesses(forWordRange: misspelled, in: sourceWord, language: language) ?? [])
+                : []
+            let correction = guesses.first
             let completions = checker.completions(forPartialWordRange: range, in: sourceWord, language: language) ?? []
             var choices: [String] = []
             if let correction, correction.caseInsensitiveCompare(sourceWord) != .orderedSame {
                 choices.append(correction)
             }
             choices.append(sourceWord)
-            for item in completions where !choices.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
+            for item in (guesses.dropFirst() + completions) where !choices.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
                 choices.append(item)
                 if choices.count == 3 { break }
             }
