@@ -771,6 +771,100 @@ static BOOL DKLanguageArrayContains(NSArray *languages, NSString *wanted) {
     return DKLanguageWithID(languages, wanted) != nil;
 }
 
+static void DKEnableLanguageID(id manager, NSString *languageID) {
+    SEL selector = NSSelectorFromString(@"enableLanguageWithID:");
+
+    if ([manager respondsToSelector:selector]) {
+        ((void(*)(id,SEL,id))objc_msgSend)(manager, selector, languageID);
+    }
+}
+
+static void DKEnsureBilingualSwiftKey(void) {
+    id manager = DKSwiftKeyLanguageManager();
+    if (!manager) return;
+
+    SEL enabledSelector = NSSelectorFromString(@"enabledLanguages");
+    SEL downloadedSelector = NSSelectorFromString(@"downloadedLanguages");
+    SEL availableSelector = NSSelectorFromString(@"languagesAvailableForDownload");
+
+    NSArray *enabled =
+        [manager respondsToSelector:enabledSelector]
+            ? ((id(*)(id,SEL))objc_msgSend)(manager, enabledSelector)
+            : @[];
+
+    NSArray *downloaded =
+        [manager respondsToSelector:downloadedSelector]
+            ? ((id(*)(id,SEL))objc_msgSend)(manager, downloadedSelector)
+            : @[];
+
+    NSArray *available =
+        [manager respondsToSelector:availableSelector]
+            ? ((id(*)(id,SEL))objc_msgSend)(manager, availableSelector)
+            : @[];
+
+    if (!gLanguageConfigRequested) {
+        SEL configSelector =
+            NSSelectorFromString(@"downloadConfigurationFileTriggeredByUser:");
+
+        if ([manager respondsToSelector:configSelector]) {
+            ((void(*)(id,SEL,BOOL))objc_msgSend)(
+                manager,
+                configSelector,
+                NO
+            );
+        }
+
+        gLanguageConfigRequested = YES;
+    }
+
+    DKEnableLanguageID(manager, @"en_US");
+
+    BOOL italianDownloaded =
+        DKLanguageArrayContains(downloaded, @"it_IT");
+
+    if (!italianDownloaded) {
+        id italian =
+            DKLanguageWithID(available, @"it_IT");
+
+        SEL downloadSelector =
+            NSSelectorFromString(@"downloadLanguage:observer:");
+
+        if (italian && [manager respondsToSelector:downloadSelector]) {
+            ((void(*)(id,SEL,id,id))objc_msgSend)(
+                manager,
+                downloadSelector,
+                italian,
+                nil
+            );
+        }
+    } else {
+        DKEnableLanguageID(manager, @"it_IT");
+    }
+
+    if (!DKLanguageArrayContains(enabled, @"en_US")) {
+        DKEnableLanguageID(manager, @"en_US");
+    }
+
+    if (italianDownloaded
+        && !DKLanguageArrayContains(enabled, @"it_IT")) {
+        DKEnableLanguageID(manager, @"it_IT");
+    }
+}
+
+static void DKBilingualTick(void) {
+    DKEnsureBilingualSwiftKey();
+
+    gLanguagePass++;
+    if (gLanguagePass >= 90) return;
+
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW,
+                      (int64_t)(1.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            DKBilingualTick();
+        });
+}
+
 static void DKTryInstallHooks(void) {
     Class toolbar = DKFindClass(@"SKToolbarCandidateBarView");
 
