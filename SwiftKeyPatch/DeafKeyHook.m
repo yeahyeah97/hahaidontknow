@@ -734,6 +734,43 @@ static void DKGridCellTap(id self, SEL _cmd) {
     }
 }
 
+static id DKSwiftKeyLanguageManager(void) {
+    Class cls = NSClassFromString(@"SKLanguageManager");
+    SEL selector = NSSelectorFromString(@"languageManager");
+
+    if (cls && [cls respondsToSelector:selector]) {
+        return ((id(*)(id,SEL))objc_msgSend)(cls, selector);
+    }
+
+    return nil;
+}
+
+static NSString *DKSwiftKeyLanguageID(id language) {
+    SEL selector = NSSelectorFromString(@"languageID");
+
+    if (language && [language respondsToSelector:selector]) {
+        return ((id(*)(id,SEL))objc_msgSend)(language, selector);
+    }
+
+    return nil;
+}
+
+static id DKLanguageWithID(NSArray *languages, NSString *wanted) {
+    for (id language in languages) {
+        NSString *languageID = DKSwiftKeyLanguageID(language);
+
+        if ([languageID caseInsensitiveCompare:wanted] == NSOrderedSame) {
+            return language;
+        }
+    }
+
+    return nil;
+}
+
+static BOOL DKLanguageArrayContains(NSArray *languages, NSString *wanted) {
+    return DKLanguageWithID(languages, wanted) != nil;
+}
+
 static void DKTryInstallHooks(void) {
     Class toolbar = DKFindClass(@"SKToolbarCandidateBarView");
 
