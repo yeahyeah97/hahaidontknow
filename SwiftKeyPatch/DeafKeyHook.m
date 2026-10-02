@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 static const NSInteger DKAIButtonTag = 0xDA8201;
 static const NSInteger DKToastTag = 0xDA8202;
@@ -58,14 +59,20 @@ static NSString *DKText(UIView *view) {
     return out;
 }
 
-static Class DKFindClassSuffix(NSString *suffix) {
+static Class DKFindClass(NSString *shortName) {
+    Class direct = NSClassFromString(shortName);
+    if (direct) return direct;
+
+    Class swiftName = NSClassFromString([@"SKKit." stringByAppendingString:shortName]);
+    if (swiftName) return swiftName;
+
     int count = objc_getClassList(NULL, 0);
     if (count <= 0) return Nil;
 
     Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
     count = objc_getClassList(classes, count);
 
-    Class found = Nil;
+    Class exactSuffix = Nil;
 
     for (int i = 0; i < count; i++) {
         const char *raw = class_getName(classes[i]);
@@ -73,15 +80,14 @@ static Class DKFindClassSuffix(NSString *suffix) {
 
         NSString *name = [NSString stringWithUTF8String:raw];
 
-        if ([name hasSuffix:suffix]
-            || [name containsString:suffix]) {
-            found = classes[i];
+        if ([name hasSuffix:shortName]) {
+            exactSuffix = classes[i];
             break;
         }
     }
 
     free(classes);
-    return found;
+    return exactSuffix;
 }
 
 static BOOL DKMethodIsDirect(Class cls, SEL selector) {
@@ -458,33 +464,60 @@ static void DKRunFix(UIButton *button) {
 
 @end
 
+static UIView *DKFindLeftToolbarControl(UIView *root) {
+    for (UIView *sub in root.subviews) {
+        NSString *identifier = sub.accessibilityIdentifier ?: @"";
+        NSString *label = sub.accessibilityLabel ?: @"";
+        NSString *text = DKText(sub);
+
+        if ([identifier isEqualToString:@"id_toolbar_left_button"]
+            || DKContains(identifier, @[@"copilot", @"bing"])
+            || DKContains(label, @[@"copilot", @"bing"])
+            || DKContains(text, @[@"toolbarCopilotButton", @"copilot"])) {
+            return sub;
+        }
+
+        UIView *nested = DKFindLeftToolbarControl(sub);
+        if (nested) return nested;
+    }
+
+    return nil;
+}
+
 static void DKInstallAIButton(UIView *toolbar) {
     if (!toolbar || toolbar.bounds.size.width < 100) return;
 
-    UIButton *button =
-        (UIButton *)[toolbar viewWithTag:DKAIButtonTag];
+    UIView *leftControl = DKFindLeftToolbarControl(toolbar);
+
+    CGRect targetFrame = CGRectMake(2.0,
+                                    2.0,
+                                    40.0,
+                                    MAX(28.0, toolbar.bounds.size.height - 4.0));
+
+    if (leftControl && leftControl.superview) {
+        targetFrame = [leftControl.superview convertRect:leftControl.frame
+                                                  toView:toolbar];
+        leftControl.hidden = YES;
+        leftControl.alpha = 0.0;
+        leftControl.userInteractionEnabled = NO;
+    }
+
+    UIButton *button = (UIButton *)[toolbar viewWithTag:DKAIButtonTag];
 
     if (!button) {
         button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.tag = DKAIButtonTag;
 
-        [button setTitle:@"AI"
-                forState:UIControlStateNormal];
-
-        [button setTitleColor:UIColor.whiteColor
-                     forState:UIControlStateNormal];
+        [button setTitle:@"AI" forState:UIControlStateNormal];
+        [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
 
         button.titleLabel.font =
-            [UIFont systemFontOfSize:12
-                              weight:UIFontWeightBold];
+            [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
 
         button.backgroundColor =
-            [UIColor colorWithRed:0.22
-                            green:0.18
-                             blue:0.29
-                            alpha:1.0];
+            [UIColor colorWithWhite:0.17 alpha:1.0];
 
-        button.layer.cornerRadius = 10;
+        button.layer.cornerRadius = 9;
         button.layer.masksToBounds = YES;
         button.accessibilityLabel = @"Deaf AI Fix";
 
@@ -503,14 +536,15 @@ static void DKInstallAIButton(UIView *toolbar) {
         [toolbar addSubview:button];
     }
 
-    CGFloat height = MIN(32.0, MAX(28.0, toolbar.bounds.size.height - 4.0));
+    if (targetFrame.size.width < 28 || targetFrame.size.width > 72) {
+        targetFrame.size.width = 40;
+    }
 
-    button.frame =
-        CGRectMake(2.0,
-                   MAX(1.0, (toolbar.bounds.size.height - height) * 0.5),
-                   38.0,
-                   height);
+    if (targetFrame.size.height < 24 || targetFrame.size.height > 44) {
+        targetFrame.size.height = 32;
+    }
 
+    button.frame = CGRectIntegral(targetFrame);
     [toolbar bringSubviewToFront:button];
 }
 
@@ -654,32 +688,35 @@ static CGSize DKMenuSize(id self,
 }
 
 static void DKOpenSwiftKeySettings(UIView *cell) {
-    UIInputViewController *controller =
-        DKInputController(cell);
+    UIInputViewController *controller = DKInputController(cell);
 
-    if (!controller.extensionContext) {
-        if (gGridCellTapOriginal) {
-            ((void(*)(id,SEL))gGridCellTapOriginal)(cell, @selector(cellTapped));
-        }
-        return;
+    if (!controller) return;
+
+    Class deepLink = NSClassFromString(@"SKDeepLink");
+    SEL actionSelector =
+        NSSelectorFromString(@"performAction:source:withResponder:withWebUrl:");
+
+    BOOL opened = NO;
+
+    if (deepLink && [deepLink respondsToSelector:actionSelector]) {
+        opened =
+            ((BOOL(*)(id,SEL,id,id,id,id))objc_msgSend)(
+                deepLink,
+                actionSelector,
+                @"settings",
+                @"toolbar_panel",
+                controller,
+                nil
+            );
     }
 
-    NSURL *settingsURL =
-        [NSURL URLWithString:@"swiftkey://settings"];
+    if (opened) return;
+
+    NSURL *fallback = [NSURL URLWithString:@"swiftkey://settings"];
 
     [controller.extensionContext
-        openURL:settingsURL
-        completionHandler:^(BOOL success) {
-
-        if (success) return;
-
-        NSURL *homeURL =
-            [NSURL URLWithString:@"swiftkey://"];
-
-        [controller.extensionContext
-            openURL:homeURL
-            completionHandler:^(__unused BOOL homeSuccess) {}];
-    }];
+        openURL:fallback
+        completionHandler:^(__unused BOOL success) {}];
 }
 
 static void DKGridCellTap(id self, SEL _cmd) {
@@ -696,7 +733,7 @@ static void DKGridCellTap(id self, SEL _cmd) {
 }
 
 static void DKTryInstallHooks(void) {
-    Class toolbar = DKFindClassSuffix(@"SKCandidateToolbarView");
+    Class toolbar = DKFindClass(@"SKCandidateToolbarView");
 
     if (toolbar && !gToolbarHooked) {
         gToolbarLayoutOriginal =
@@ -707,7 +744,7 @@ static void DKTryInstallHooks(void) {
         gToolbarHooked = (gToolbarLayoutOriginal != NULL);
     }
 
-    Class renderer = DKFindClassSuffix(@"SKKeyboardKeyRenderer");
+    Class renderer = DKFindClass(@"SKKeyboardKeyRenderer");
 
     if (renderer && !gRendererHooked) {
         SEL selector =
@@ -722,7 +759,7 @@ static void DKTryInstallHooks(void) {
         gRendererHooked = (gRendererSpaceOriginal != NULL);
     }
 
-    Class menu = DKFindClassSuffix(@"SKToolBarMenuController");
+    Class menu = DKFindClass(@"SKToolBarMenuController");
 
     if (menu && !gMenuHooked) {
         SEL sizeSelector =
@@ -736,7 +773,7 @@ static void DKTryInstallHooks(void) {
         gMenuHooked = (gMenuSizeOriginal != NULL);
     }
 
-    Class gridCell = DKFindClassSuffix(@"SkToolBarMenuGridCVCell");
+    Class gridCell = DKFindClass(@"SkToolBarMenuGridCVCell");
 
     if (gridCell && !gGridCellHooked) {
         gGridCellLayoutOriginal =
