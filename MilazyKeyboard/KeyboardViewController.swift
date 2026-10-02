@@ -380,7 +380,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         view.bringSubviewToFront(preview)
     }
 
-    private func hidePreview() {
+    func hidePreview() {
         keyPreview?.isHidden = true
     }
 
@@ -529,7 +529,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
                 mode: KeyboardPreferences.shared.languageMode, rejectedCorrection: true)
         } else { textDocumentProxy.deleteBackward() }
         undoCorrection = nil
-        capitalization.reset()
+        capitalization.consumedLetter()
         didInsertText()
         playKeyFeedback()
     }
@@ -566,7 +566,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             textDocumentProxy.deleteBackward()
             textDocumentProxy.insertText(". ")
             lastSpaceTap = 0
-            capitalization.reset()
+            capitalization.consumedLetter()
             didInsertText()
             playKeyFeedback()
             return
@@ -589,7 +589,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         }
         textDocumentProxy.insertText(" ")
         lastSpaceTap = now
-        capitalization.reset()
+        capitalization.consumedLetter()
         didInsertText()
         if let source, let applied, let after = textDocumentProxy.documentContextBeforeInput {
             undoCorrection = (source, applied, after, textDocumentProxy.documentIdentifier)
@@ -606,7 +606,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         let word = TextContext.currentWord(in: context)
         textDocumentProxy.insertText("\n")
         undoCorrection = nil
-        capitalization.reset()
+        capitalization.consumedLetter()
         didInsertText()
         if let word {
             predictionEngine.learn(word: word, previous: TextContext.previousWord(in: context),

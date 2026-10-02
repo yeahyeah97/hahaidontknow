@@ -29,7 +29,9 @@ struct CapitalizationState {
             return context.last.map { !TextContext.isWordCharacter($0) } ?? true
         case .sentences:
             guard let context else { return current }
-            if context.isEmpty || context.hasSuffix("\n") { return true }
+            if context.isEmpty || context.reversed().prefix(while: { $0.isWhitespace }).contains("\n") {
+                return true
+            }
             guard context.last?.isWhitespace == true else { return false }
             let trimmed = context.reversed().drop(while: { $0.isWhitespace })
                 .drop(while: { "\"'’”)]}".contains($0) })
@@ -37,3 +39,5 @@ struct CapitalizationState {
         }
     }
 }
+
+

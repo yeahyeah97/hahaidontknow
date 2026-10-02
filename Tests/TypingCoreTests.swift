@@ -27,6 +27,12 @@ enum TypingCoreTests {
         caps.toggle(currentlyUppercase: false, lock: true)
         caps.consumedLetter()
         expect(caps.uppercase(context: "ciao", mode: .none, current: false), "Caps lock persists")
+        caps.consumedLetter()
+        expect(caps.uppercase(context: "ciao ", mode: .sentences, current: false), "Caps lock across Space")
+        caps.consumedLetter()
+        expect(caps.uppercase(context: "ciao\n", mode: .sentences, current: false), "Caps lock across Return")
+        caps.reset()
+        expect(caps.uppercase(context: "ciao\n  ", mode: .sentences, current: false), "Indented paragraph start")
 
         let suite = "milazy.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
