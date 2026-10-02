@@ -59,6 +59,10 @@ enum TypingCoreTests {
         model.flush()
         expect(TouchResolver.resolve(CGPoint(x: 20, y: 22), candidates: candidates,
                                      expansion: expansion, model: model) == 0, "Adaptation keeps center")
+        expect(TouchResolver.resolve(CGPoint(x: 39.5, y: 22), candidates: candidates,
+                                     expansion: expansion, model: model) == 0, "Painted edge never changes neighbor")
+        expect(TouchResolver.resolve(CGPoint(x: 46.5, y: 22), candidates: candidates,
+                                     expansion: expansion, model: model) == 1, "Neighbor painted edge never changes")
         let restored = TouchLearningModel(defaults: defaults)
         expect(restored.probabilityScore(for: "a", point: CGPoint(x: 27, y: 25), frame: candidates[0].frame)
                < restored.probabilityScore(for: "a", point: CGPoint(x: 6, y: 25), frame: candidates[0].frame),

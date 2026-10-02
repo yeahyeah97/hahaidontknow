@@ -135,7 +135,7 @@ extension KeyboardViewController {
             ]))
 
         case .settings:
-            title.text = "Milazy Keyboard 3.1.2"
+            title.text = "Milazy Keyboard 3.1.3"
             aiStatusLabel.text = "Typing engine settings"
 
             let prefs = KeyboardPreferences.shared

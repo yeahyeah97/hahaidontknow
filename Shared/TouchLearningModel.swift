@@ -54,9 +54,12 @@ final class TouchLearningModel {
     func probabilityScore(for key: String, point: CGPoint, frame: CGRect) -> CGFloat {
         let nx = Double((point.x - frame.midX) / max(frame.width, 1))
         let ny = Double((point.y - frame.midY) / max(frame.height, 1))
-        lock.lock()
-        let model = models[key] ?? Gaussian()
-        lock.unlock()
+        // Never wait for background learning on the touch-down path.
+        let model: Gaussian
+        if lock.try() {
+            model = models[key] ?? Gaussian()
+            lock.unlock()
+        } else { model = Gaussian() }
         let reliability = min(1, Double(model.count) / 70)
         let dx = nx - model.meanX * reliability
         let dy = ny - model.meanY * reliability
@@ -104,3 +107,4 @@ final class TouchLearningModel {
         }
     }
 }
+

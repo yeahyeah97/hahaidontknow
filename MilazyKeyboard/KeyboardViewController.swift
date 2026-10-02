@@ -218,6 +218,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     func rebuildKeys() {
+        keyCanvas.cancelAllContacts()
         keyCanvas.subviews.forEach { $0.removeFromSuperview() }
         laidOutKeys.removeAll()
         renderedShift = nil
@@ -312,6 +313,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         let button = TouchKey(type: .system)
         button.setTitle(title, for: .normal)
         button.referenceRole = role
+        button.accessibilityIdentifier = "milazy.key." + (role == .normal ? title.lowercased() : String(describing: role))
         if role == .normal && page != .emoji {
             button.learningKey = title.lowercased()
         }
@@ -354,9 +356,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         }
 
         if role == .delete {
-            let hold = UILongPressGestureRecognizer(target: self, action: #selector(backspaceHold(_:)))
-            hold.minimumPressDuration = 0.32
-            button.addGestureRecognizer(hold)
+            button.onHoldBegan = { [weak self] in self?.startBackspaceRepeat() }
+            button.onHoldEnded = { [weak self] in self?.stopBackspaceRepeat() }
         }
 
         if role == .space && page == .letters {
@@ -507,6 +508,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        keyCanvas.cancelAllContacts()
         backspaceTimer?.invalidate()
         backspaceTimer = nil
         aiTask?.cancel()
@@ -559,23 +561,17 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         playKeyFeedback()
     }
 
-    @objc private func backspaceHold(_ gesture: UILongPressGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            backspaceTimer?.invalidate()
-            backspaceDown()
-
-            backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.075, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                self.backspaceDown()
-            }
-        case .ended, .cancelled, .failed:
-            backspaceTimer?.invalidate()
-            backspaceTimer = nil
-            schedulePredictionRefresh()
-        default:
-            break
+    private func startBackspaceRepeat() {
+        guard backspaceTimer == nil else { return }
+        backspaceDown()
+        backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.075, repeats: true) { [weak self] _ in
+            self?.backspaceDown()
         }
+    }
+
+    private func stopBackspaceRepeat() {
+        backspaceTimer?.invalidate()
+        backspaceTimer = nil
     }
 
     @objc private func spaceDown() {

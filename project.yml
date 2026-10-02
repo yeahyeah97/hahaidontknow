@@ -47,6 +47,7 @@ targets:
       - path: Shared
         excludes: [Resources]
       - Tests/UIKitTypingTests.swift
+      - Tests/Support
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.typingtests
@@ -54,6 +55,35 @@ targets:
         CODE_SIGNING_ALLOWED: NO
     dependencies:
       - target: MilazyKeyboard
+  MilazyTouchHarness:
+    type: application
+    platform: iOS
+    sources:
+      - path: MilazyKeyboard
+        excludes: [Info.plist]
+      - path: Shared
+        excludes: [Resources]
+      - path: Shared/Resources
+        buildPhase: resources
+      - Tests/TouchHarnessAppDelegate.swift
+      - Tests/Support
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milazy.touchharness
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+  MilazyTouchUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests/TouchRoutingUITests.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milazy.touchuitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        TEST_TARGET_NAME: MilazyTouchHarness
+    dependencies:
+      - target: MilazyTouchHarness
 schemes:
   MilazyKeyboard:
     build:
@@ -64,6 +94,8 @@ schemes:
       targets:
         MilazyKeyboard: all
         MilazyTypingTests: [test]
+        MilazyTouchHarness: [test]
+        MilazyTouchUITests: [test]
     test:
-      targets: [MilazyTypingTests]
+      targets: [MilazyTypingTests, MilazyTouchUITests]
 

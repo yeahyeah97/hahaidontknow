@@ -7,7 +7,8 @@ final class TouchKey: UIButton {
     var onFingerMoved: ((TouchKey, CGPoint, String) -> Void)?
     var onFingerEnded: ((TouchKey, CGPoint, String) -> Void)?
     var onFingerCancelled: (() -> Void)?
-    private var touchStartText: String = ""
+    var onHoldBegan: (() -> Void)?
+    var onHoldEnded: (() -> Void)?
 
     override var isHighlighted: Bool {
         didSet {
@@ -16,46 +17,6 @@ final class TouchKey: UIButton {
                 self.alpha = self.isHighlighted ? 0.86 : 1
             }
         }
-    }
-
-    private var initialPoint: CGPoint?
-    private var initialFrame: CGRect = .zero
-
-    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        touchStartText = currentTitle ?? ""
-        initialPoint = superview.map { touch.location(in: $0) }
-        initialFrame = frame
-        let accepted = super.beginTracking(touch, with: event)
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.isTracking else { return }
-            self.onFingerBegan?(self, self.touchStartText)
-        }
-        return accepted
-    }
-
-    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        let accepted = super.continueTracking(touch, with: event)
-        if let container = superview {
-            onFingerMoved?(self, touch.location(in: container), touchStartText)
-        }
-        return accepted
-    }
-
-    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
-        super.endTracking(touch, with: event)
-        if let touch, let container = superview {
-            onFingerEnded?(self, touch.location(in: container), touchStartText)
-        } else { onFingerCancelled?() }
-        if let point = initialPoint, let key = learningKey {
-            TouchLearningModel.shared.record(key: key, point: point, frame: initialFrame)
-        }
-        initialPoint = nil
-    }
-
-    override func cancelTracking(with event: UIEvent?) {
-        super.cancelTracking(with: event)
-        initialPoint = nil
-        onFingerCancelled?()
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
@@ -107,27 +68,4 @@ final class KeyPreviewView: UIView {
     }
 }
 
-final class KeyCanvasView: UIView {
-    private var candidates: [TouchResolver.Candidate] = []
-    private var keys: [TouchKey] = []
-
-    func cacheLayout() {
-        keys = subviews.compactMap { $0 as? TouchKey }
-        candidates = keys.enumerated().map {
-            TouchResolver.Candidate(id: $0.offset, frame: $0.element.frame,
-                                    learningKey: $0.element.learningKey)
-        }
-    }
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard !isHidden, alpha > 0.01, isUserInteractionEnabled, bounds.contains(point)
-        else { return nil }
-        let hitbox = KeyboardPreferences.shared.hitboxMode
-        guard let id = TouchResolver.resolve(
-            point, candidates: candidates,
-            expansion: CGSize(width: hitbox.expansionX, height: hitbox.expansionY)
-        ), keys.indices.contains(id) else { return super.hitTest(point, with: event) }
-        return keys[id]
-    }
-}
 
