@@ -6,7 +6,7 @@ enum TextContext {
     }
 
     static func currentWord(in text: String) -> String? {
-        let word = String(text.suffix(while: isWordCharacter))
+        let word = String(text.reversed().prefix(while: isWordCharacter).reversed())
         return word.contains(where: { $0.isLetter }) ? word : nil
     }
 
