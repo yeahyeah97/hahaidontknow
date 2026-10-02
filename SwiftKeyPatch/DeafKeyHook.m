@@ -94,6 +94,34 @@ static Class DKFindClass(NSString *shortName) {
     return exactSuffix;
 }
 
+static Class DKFindToolbarActionsViewClass(void) {
+    int count = objc_getClassList(NULL, 0);
+    if (count <= 0) return Nil;
+
+    Class *classes =
+        (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
+
+    count = objc_getClassList(classes, count);
+
+    Class found = Nil;
+
+    for (int i = 0; i < count; i++) {
+        const char *raw = class_getName(classes[i]);
+        if (!raw) continue;
+
+        NSString *name = [NSString stringWithUTF8String:raw];
+
+        if ([name containsString:@"SKCandidateToolbarView"]
+            && [name hasSuffix:@"ActionsView"]) {
+            found = classes[i];
+            break;
+        }
+    }
+
+    free(classes);
+    return found;
+}
+
 static BOOL DKMethodIsDirect(Class cls, SEL selector) {
     unsigned int count = 0;
     Method *methods = class_copyMethodList(cls, &count);
