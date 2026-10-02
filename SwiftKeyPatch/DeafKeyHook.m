@@ -851,7 +851,7 @@ static void DKEnsureBilingualSwiftKey(void) {
     }
 }
 
-static void DKBilingualTick(void) {
+__attribute__((constructor)) static void DKBilingualTick(void) {
     DKEnsureBilingualSwiftKey();
 
     gLanguagePass++;
