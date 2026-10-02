@@ -26,12 +26,16 @@ enum TouchResolver {
             $0.frame.insetBy(dx: -expansion.width, dy: -expansion.height).contains(point)
         }
         let pool = eligible.isEmpty ? row : eligible
-        let ranked = pool.map { key -> (Candidate, CGFloat) in
+        let scores: [(Candidate, CGFloat)] = pool.map { key -> (Candidate, CGFloat) in
             let score = model.probabilityScore(
                 for: key.learningKey ?? "", point: point, frame: key.frame
             )
             return (key, score)
-        }.sorted { $0.1 == $1.1 ? $0.0.id < $1.0.id : $0.1 < $1.1 }
+        }
+        let ranked = scores.sorted { lhs, rhs in
+            if lhs.1 == rhs.1 { return lhs.0.id < rhs.0.id }
+            return lhs.1 < rhs.1
+        }
         guard let best = ranked.first else { return nil }
         if let visible, visible.id != best.0.id,
            let visibleScore = ranked.first(where: { $0.0.id == visible.id })?.1,
