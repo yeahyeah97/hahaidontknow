@@ -55,6 +55,10 @@ targets:
     dependencies:
       - target: MilazyKeyboard
 schemes:
+  MilazyKeyboard:
+    build:
+      targets:
+        MilazyKeyboard: all
   MilazyTypingTests:
     build:
       targets:
