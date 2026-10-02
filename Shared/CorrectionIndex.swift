@@ -5,7 +5,7 @@ import Foundation
 struct CorrectionIndex {
     private static let italian = """
     a ad al alla allo alle ai agli anche ancora andare anno anni amico amica amici
-    amore arrivare aspetta aspettare abbiamo bene buongiorno buonasera casa ciao che
+    amore arrivare aspetta aspettare abbiamo bene boh buongiorno buonasera casa ciao che
     chi chiamare chiamato chiamo ci città come comprare con cosa cose così da dai dal
     dalla delle devo devi deve devono dire di dopo dove e è essere era ero ero eri
     erano fa fai fare fatto farò figlio figlia fine forse grazie già giorno giorni

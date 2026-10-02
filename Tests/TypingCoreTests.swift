@@ -4,7 +4,10 @@ import CoreGraphics
 @main
 enum TypingCoreTests {
     static func expect(_ value: @autoclosure () -> Bool, _ message: String) {
-        precondition(value(), message)
+        if !value() {
+            FileHandle.standardError.write(Data(("FAILED: " + message + "\n").utf8))
+            exit(1)
+        }
     }
 
     static func main() {
