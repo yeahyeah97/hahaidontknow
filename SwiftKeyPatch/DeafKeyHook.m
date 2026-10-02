@@ -580,6 +580,64 @@ static void DKInstallAIButton(UIView *toolbar) {
     [toolbar bringSubviewToFront:button];
 }
 
+static void DKActionsLayout(id self, SEL _cmd) {
+    if (gActionsLayoutOriginal) {
+        ((void(*)(id,SEL))gActionsLayoutOriginal)(self, _cmd);
+    }
+
+    if (![self isKindOfClass:[UIView class]]) return;
+
+    UIView *actions = (UIView *)self;
+
+    UIButton *button =
+        (UIButton *)[actions viewWithTag:DKAIButtonTag];
+
+    if (!button) {
+        button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.tag = DKAIButtonTag;
+
+        [button setTitle:@"AI" forState:UIControlStateNormal];
+        [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+
+        button.titleLabel.font =
+            [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+
+        button.backgroundColor =
+            [UIColor colorWithWhite:0.15 alpha:1.0];
+
+        button.layer.cornerRadius = 10;
+        button.layer.masksToBounds = YES;
+        button.accessibilityLabel = @"Deaf AI Fix";
+
+        [button addTarget:[DKActionTarget shared]
+                   action:@selector(tapAI:)
+         forControlEvents:UIControlEventTouchUpInside];
+
+        UILongPressGestureRecognizer *hold =
+            [[UILongPressGestureRecognizer alloc]
+                initWithTarget:[DKActionTarget shared]
+                        action:@selector(holdAI:)];
+
+        hold.minimumPressDuration = 0.55;
+        [button addGestureRecognizer:hold];
+
+        [actions addSubview:button];
+    }
+
+    CGFloat height = MIN(38.0, MAX(30.0, actions.bounds.size.height - 8.0));
+
+    button.frame = CGRectMake(3.0,
+                              MAX(2.0, (actions.bounds.size.height - height) * 0.5),
+                              46.0,
+                              height);
+
+    button.hidden = NO;
+    button.alpha = 1.0;
+    button.userInteractionEnabled = YES;
+
+    [actions bringSubviewToFront:button];
+}
+
 static void DKToolbarLayout(id self, SEL _cmd) {
     if (gToolbarLayoutOriginal) {
         ((void(*)(id,SEL))gToolbarLayoutOriginal)(self, _cmd);
