@@ -16,6 +16,8 @@ static BOOL gToolbarHooked = NO;
 static BOOL gRendererHooked = NO;
 static BOOL gMenuHooked = NO;
 static BOOL gGridCellHooked = NO;
+static BOOL gLanguageConfigRequested = NO;
+static NSInteger gLanguagePass = 0;
 
 static NSString *DKLower(NSString *s) {
     return [s isKindOfClass:[NSString class]] ? s.lowercaseString : @"";
