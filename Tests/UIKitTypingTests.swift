@@ -176,4 +176,32 @@ final class UIKitTypingTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(proxy.text, released, "Release stops all repeat work")
     }
+
+    func testPageSwitchAcceptsTheNextFingerWithoutWaitingForLayout() throws {
+        let proxy = TypingProxy("ciao ")
+        let controller = try controller(proxy)
+        let canvas = controller.keyCanvas
+        let mode = try XCTUnwrap(canvas.subviews.compactMap { $0 as? TouchKey }
+            .first { $0.referenceRole == .mode })
+        XCTAssertTrue(canvas.beginContact(1, at: CGPoint(x: mode.frame.midX, y: mode.frame.midY)))
+        let one = try key("1", in: controller)
+        XCTAssertGreaterThan(one.frame.width, 1)
+        XCTAssertTrue(canvas.beginContact(2, at: CGPoint(x: one.frame.midX, y: one.frame.midY)))
+        canvas.endContact(1)
+        canvas.endContact(2)
+        XCTAssertEqual(proxy.text, "ciao 1")
+    }
+
+    func testMovingOffDeleteCancelsPendingHold() async throws {
+        let proxy = TypingProxy("abcdefghijklmnopqrst")
+        let controller = try controller(proxy)
+        let canvas = controller.keyCanvas
+        let delete = try XCTUnwrap(canvas.subviews.compactMap { $0 as? TouchKey }
+            .first { $0.referenceRole == .delete })
+        XCTAssertTrue(canvas.beginContact(1, at: CGPoint(x: delete.frame.midX, y: delete.frame.midY)))
+        canvas.moveContact(1, to: CGPoint(x: 0, y: 0))
+        try await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertEqual(proxy.text, "abcdefghijklmnopqrs")
+        canvas.endContact(1)
+    }
 }

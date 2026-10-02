@@ -239,6 +239,9 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         syncAutoCapitalization()
         updateAppearance()
         view.setNeedsLayout()
+        // A second finger can arrive in the same event as a page-switch key.
+        // Publish the new key geometry before routing that next contact.
+        view.layoutIfNeeded()
     }
 
     private func buildLetters() {

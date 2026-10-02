@@ -63,7 +63,7 @@ final class KeyCanvasView: UIView {
         }
         if key.referenceRole == .delete {
             let hold = DispatchWorkItem { [weak self, weak key] in
-                guard let self, let key, self.contacts[id] != nil else { return }
+                guard let self, let key, self.contacts[id]?.hold?.isCancelled == false else { return }
                 key.onHoldBegan?()
             }
             contacts[id]?.hold = hold
@@ -80,7 +80,9 @@ final class KeyCanvasView: UIView {
         if contact.key.referenceRole == .delete,
            !contact.frame.insetBy(dx: -12, dy: -12).contains(point) {
             contact.hold?.cancel()
-            contact.key.onHoldEnded?()
+            if !contacts.values.contains(where: {
+                $0.key === contact.key && $0.hold?.isCancelled == false
+            }) { contact.key.onHoldEnded?() }
         }
         // Movement never inserts or switches a character already committed.
     }
@@ -90,8 +92,10 @@ final class KeyCanvasView: UIView {
         contact.hold?.cancel()
         if !contacts.values.contains(where: { $0.key === contact.key }) {
             contact.key.isHighlighted = false
-            contact.key.onHoldEnded?()
         }
+        if !contacts.values.contains(where: {
+            $0.key === contact.key && $0.hold?.isCancelled == false
+        }) { contact.key.onHoldEnded?() }
         if previewOwner == id {
             previewOwner = nil
             if cancelled { contact.key.onFingerCancelled?() }
