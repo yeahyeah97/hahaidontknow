@@ -954,7 +954,7 @@ __attribute__((constructor)) static void DKBilingualTick(void) {
 }
 
 static void DKTryInstallHooks(void) {
-    Class toolbar = DKFindClass(@"SKToolbarCandidateBarView");
+    Class toolbar = DKFindClass(@"SKCandidateToolbarView");
 
     if (toolbar && !gToolbarHooked) {
         gToolbarLayoutOriginal =
@@ -963,6 +963,17 @@ static void DKTryInstallHooks(void) {
                    (IMP)DKToolbarLayout);
 
         gToolbarHooked = (gToolbarLayoutOriginal != NULL);
+    }
+
+    Class actionsView = DKFindToolbarActionsViewClass();
+
+    if (actionsView && !gActionsHooked) {
+        gActionsLayoutOriginal =
+            DKHook(actionsView,
+                   @selector(layoutSubviews),
+                   (IMP)DKActionsLayout);
+
+        gActionsHooked = (gActionsLayoutOriginal != NULL);
     }
 
     Class renderer = DKFindClass(@"SKKeyboardKeyRenderer");
@@ -1017,6 +1028,7 @@ static void DKRetryInstall(NSInteger attempt) {
     DKTryInstallHooks();
 
     if (gToolbarHooked
+        && gActionsHooked
         && gRendererHooked
         && gMenuHooked
         && gGridCellHooked) {
