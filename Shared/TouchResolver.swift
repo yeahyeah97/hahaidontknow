@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 enum TouchResolver {
     struct Candidate {
