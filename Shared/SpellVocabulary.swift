@@ -69,7 +69,7 @@ final class SpellVocabulary {
         func read(_ language: String) -> [(String, Double)]? {
             guard let text = try? String(contentsOf: directory.appendingPathComponent(language + ".tsv"),
                                          encoding: .utf8) else { return nil }
-            return text.split(separator: "\n").compactMap { line in
+            return text.split(whereSeparator: { $0.isNewline }).compactMap { line in
                 let fields = line.split(separator: "\t")
                 guard fields.count == 2, let value = Double(fields[1]) else { return nil }
                 return (String(fields[0]), value)
