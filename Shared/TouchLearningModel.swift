@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 final class TouchLearningModel {
     static let shared = TouchLearningModel()
