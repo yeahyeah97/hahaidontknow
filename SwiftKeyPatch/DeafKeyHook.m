@@ -7,12 +7,14 @@ static const NSInteger DKAIButtonTag = 0xDA8201;
 static const NSInteger DKToastTag = 0xDA8202;
 
 static IMP gToolbarLayoutOriginal = NULL;
+static IMP gActionsLayoutOriginal = NULL;
 static IMP gRendererSpaceOriginal = NULL;
 static IMP gMenuSizeOriginal = NULL;
 static IMP gGridCellLayoutOriginal = NULL;
 static IMP gGridCellTapOriginal = NULL;
 
 static BOOL gToolbarHooked = NO;
+static BOOL gActionsHooked = NO;
 static BOOL gRendererHooked = NO;
 static BOOL gMenuHooked = NO;
 static BOOL gGridCellHooked = NO;
