@@ -7,6 +7,7 @@ final class LocalLanguageModel {
         var words: [String: Int]
         var bigrams: [String: Int]
         var corrections: [String: Int]
+        var confirmedWords: [String: Int] = [:]
 
         func frequency(of word: String) -> Int { words[word.lowercased(), default: 0] }
         func corrections(for source: String) -> [(String, Int)] {
@@ -45,6 +46,7 @@ final class LocalLanguageModel {
     private let wordKey = "milazy.learned.wordFrequency.v1"
     private let bigramKey = "milazy.learned.bigramFrequency.v1"
     private let correctionKey = "milazy.learned.correctionFrequency.v1"
+    private let confirmedKey = "milazy.learned.confirmedWords.v2"
     private var state: Snapshot
 
     init(defaults: UserDefaults = .standard) {
@@ -52,16 +54,18 @@ final class LocalLanguageModel {
         state = Snapshot(
             words: defaults.dictionary(forKey: wordKey) as? [String: Int] ?? [:],
             bigrams: defaults.dictionary(forKey: bigramKey) as? [String: Int] ?? [:],
-            corrections: defaults.dictionary(forKey: correctionKey) as? [String: Int] ?? [:]
+            corrections: defaults.dictionary(forKey: correctionKey) as? [String: Int] ?? [:],
+            confirmedWords: defaults.dictionary(forKey: confirmedKey) as? [String: Int] ?? [:]
         )
         trim()
     }
 
     func snapshot() -> Snapshot { state }
 
-    func learn(word: String, previous: String?) {
+    func learn(word: String, previous: String?, confirmed: Bool = true) {
         let word = word.lowercased()
         guard (2...40).contains(word.count), word.contains(where: { $0.isLetter }) else { return }
+        if confirmed { state.confirmedWords[word, default: 0] += 1 }
         state.words[word, default: 0] = min(state.words[word, default: 0] + 1, 50_000)
         if let previous, !previous.isEmpty {
             let key = previous.lowercased() + "\u{1F}" + word
@@ -87,6 +91,7 @@ final class LocalLanguageModel {
     }
 
     func persist() {
+        defaults.set(state.confirmedWords, forKey: confirmedKey)
         defaults.set(state.words, forKey: wordKey)
         defaults.set(state.bigrams, forKey: bigramKey)
         defaults.set(state.corrections, forKey: correctionKey)
@@ -103,10 +108,10 @@ final class LocalLanguageModel {
             let ranked = values.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
             return Dictionary(uniqueKeysWithValues: ranked.prefix(keep).map { ($0.key, $0.value) })
         }
+        state.confirmedWords = bounded(state.confirmedWords, maximum: 12000, keep: 10000)
         state.words = bounded(state.words, maximum: 12000, keep: 10000)
         state.bigrams = bounded(state.bigrams, maximum: 24000, keep: 20000)
         state.corrections = bounded(state.corrections, maximum: 8000, keep: 6000)
     }
 }
-
 

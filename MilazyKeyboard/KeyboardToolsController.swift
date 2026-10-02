@@ -135,7 +135,7 @@ extension KeyboardViewController {
             ]))
 
         case .settings:
-            title.text = "Milazy Keyboard 3.1.1"
+            title.text = "Milazy Keyboard 3.1.2"
             aiStatusLabel.text = "Typing engine settings"
 
             let prefs = KeyboardPreferences.shared
@@ -249,7 +249,7 @@ extension KeyboardViewController {
         let items = ClipboardHistory.shared.items
         guard sender.tag >= 0, sender.tag < items.count else { return }
         let text = items[sender.tag]
-        textDocumentProxy.insertText(text)
+        inputProxy.insertText(text)
         ClipboardHistory.shared.add(text)
         hideAIPanel()
         schedulePredictionRefresh()
@@ -325,7 +325,7 @@ extension KeyboardViewController {
             return
         }
 
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let context = inputProxy.documentContextBeforeInput ?? ""
         let queryWords = words(in: context).suffix(3)
         let query = queryWords.joined(separator: " ")
         guard !query.isEmpty else {
@@ -389,12 +389,12 @@ extension KeyboardViewController {
             aiStatusLabel.text = "Paste a Gemini API key first."
             return
         }
-        let selected = textDocumentProxy.selectedText
-        let before = textDocumentProxy.documentContextBeforeInput
-        let after = textDocumentProxy.documentContextAfterInput
+        let selected = inputProxy.selectedText
+        let before = inputProxy.documentContextBeforeInput
+        let after = inputProxy.documentContextAfterInput
         let source = selected.flatMap { $0.isEmpty ? nil : $0 } ?? before ?? ""
         guard !source.isEmpty else { aiStatusLabel.text = "Type something first."; return }
-        let document = textDocumentProxy.documentIdentifier
+        let document = inputProxy.documentIdentifier
         let revision = inputRevision
         aiStatusLabel.text = "Thinking…"
         setAIPanelControls(enabled: false)
@@ -406,10 +406,10 @@ extension KeyboardViewController {
                 self.aiTask = nil
                 self.setAIPanelControls(enabled: true)
                 guard self.inputRevision == revision,
-                      self.textDocumentProxy.documentIdentifier == document,
-                      self.textDocumentProxy.documentContextBeforeInput == before,
-                      self.textDocumentProxy.documentContextAfterInput == after,
-                      self.textDocumentProxy.selectedText == selected else {
+                      self.inputProxy.documentIdentifier == document,
+                      self.inputProxy.documentContextBeforeInput == before,
+                      self.inputProxy.documentContextAfterInput == after,
+                      self.inputProxy.selectedText == selected else {
                     self.aiStatusLabel.text = "Text changed. Tap Fix again for the current text."
                     return
                 }
@@ -418,9 +418,9 @@ extension KeyboardViewController {
                     return
                 }
                 if selected?.isEmpty != false {
-                    for _ in source { self.textDocumentProxy.deleteBackward() }
+                    for _ in source { self.inputProxy.deleteBackward() }
                 }
-                self.textDocumentProxy.insertText(replacement)
+                self.inputProxy.insertText(replacement)
                 self.undoCorrection = nil
                 self.capitalization.reset()
                 self.didInsertText()
@@ -440,4 +440,3 @@ extension KeyboardViewController {
         visit(aiPanel)
     }
 }
-

@@ -7,7 +7,12 @@ targets:
   MilazyKeyboard:
     type: application
     platform: iOS
-    sources: [MilazyApp, Shared]
+    sources:
+      - MilazyApp
+      - path: Shared
+        excludes: [Resources]
+      - path: Shared/Resources
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.keyboard
@@ -18,10 +23,43 @@ targets:
   MilazyKeyboardExtension:
     type: app-extension
     platform: iOS
-    sources: [MilazyKeyboard, Shared]
+    sources:
+      - MilazyKeyboard
+      - path: Shared
+        excludes: [Resources]
+      - path: Shared/Resources
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.keyboard.extension
         INFOPLIST_FILE: MilazyKeyboard/Info.plist
         CODE_SIGNING_ALLOWED: NO
         SKIP_INSTALL: YES
+
+
+
+  MilazyTypingTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: MilazyKeyboard
+        excludes: [Info.plist]
+      - path: Shared
+        excludes: [Resources]
+      - Tests/UIKitTypingTests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milazy.typingtests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - target: MilazyKeyboard
+schemes:
+  MilazyTypingTests:
+    build:
+      targets:
+        MilazyKeyboard: all
+        MilazyTypingTests: [test]
+    test:
+      targets: [MilazyTypingTests]
+

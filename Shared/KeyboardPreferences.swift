@@ -3,6 +3,7 @@ import Foundation
 final class KeyboardPreferences {
     static let shared = KeyboardPreferences()
     private let defaults = UserDefaults.standard
+    private var cached: [String: Any] = [:]
 
     enum LanguageMode: String, CaseIterable {
         case automatic, italian, english
@@ -47,34 +48,39 @@ final class KeyboardPreferences {
     }
 
     var languageMode: LanguageMode {
-        get { LanguageMode(rawValue: defaults.string(forKey: "milazy.pref.language") ?? "") ?? .automatic }
-        set { defaults.set(newValue.rawValue, forKey: "milazy.pref.language") }
+        get { LanguageMode(rawValue: cached["milazy.pref.language"] as? String ?? "") ?? .automatic }
+        set { cached["milazy.pref.language"] = newValue.rawValue; defaults.set(newValue.rawValue, forKey: "milazy.pref.language") }
     }
 
     var layoutMode: LayoutMode {
-        get { LayoutMode(rawValue: defaults.string(forKey: "milazy.pref.layout") ?? "") ?? .ios }
-        set { defaults.set(newValue.rawValue, forKey: "milazy.pref.layout") }
+        get { LayoutMode(rawValue: cached["milazy.pref.layout"] as? String ?? "") ?? .ios }
+        set { cached["milazy.pref.layout"] = newValue.rawValue; defaults.set(newValue.rawValue, forKey: "milazy.pref.layout") }
     }
 
     var hitboxMode: HitboxMode {
-        get { HitboxMode(rawValue: defaults.string(forKey: "milazy.pref.hitbox") ?? "") ?? .large }
-        set { defaults.set(newValue.rawValue, forKey: "milazy.pref.hitbox") }
+        get { HitboxMode(rawValue: cached["milazy.pref.hitbox"] as? String ?? "") ?? .large }
+        set { cached["milazy.pref.hitbox"] = newValue.rawValue; defaults.set(newValue.rawValue, forKey: "milazy.pref.hitbox") }
     }
 
     var keyPopups: Bool {
-        get { defaults.object(forKey: "milazy.pref.popups") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "milazy.pref.popups") }
+        get { cached["milazy.pref.popups"] as? Bool ?? true }
+        set { cached["milazy.pref.popups"] = newValue; defaults.set(newValue, forKey: "milazy.pref.popups") }
     }
 
     var haptics: Bool {
-        get { defaults.object(forKey: "milazy.pref.haptics") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "milazy.pref.haptics") }
+        get { cached["milazy.pref.haptics"] as? Bool ?? true }
+        set { cached["milazy.pref.haptics"] = newValue; defaults.set(newValue, forKey: "milazy.pref.haptics") }
     }
 
     var sound: Bool {
-        get { defaults.object(forKey: "milazy.pref.sound") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "milazy.pref.sound") }
+        get { cached["milazy.pref.sound"] as? Bool ?? true }
+        set { cached["milazy.pref.sound"] = newValue; defaults.set(newValue, forKey: "milazy.pref.sound") }
     }
 
-    private init() {}
+    private init() {
+        for key in ["language", "layout", "hitbox", "popups", "haptics", "sound"] {
+            cached["milazy.pref." + key] = defaults.object(forKey: "milazy.pref." + key)
+        }
+    }
 }
+

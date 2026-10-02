@@ -20,12 +20,20 @@ jobs:
           xcodebuild -showsdks
       - name: Test typing core
         run: |
-          swiftc -O Shared/SemanticFixRouting.swift Shared/KeyboardPreferences.swift Shared/LocalLanguageModel.swift Shared/BilingualLanguageState.swift Shared/CorrectionIndex.swift Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
+          swiftc -O Shared/SpellVocabulary.swift Shared/TypingContextBuffer.swift Shared/SemanticFixRouting.swift Shared/KeyboardPreferences.swift Shared/LocalLanguageModel.swift Shared/BilingualLanguageState.swift Shared/CorrectionIndex.swift Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
           "$RUNNER_TEMP/TypingCoreTests"
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
+      - name: Test keyboard input on iOS Simulator
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for key,values in d["devices"].items() if "iOS" in key for v in values if v["name"].startswith("iPhone")))')
+          xcodebuild -project MilazyKeyboard.xcodeproj -scheme MilazyTypingTests \
+            -destination "platform=iOS Simulator,id=$DEVICE" \
+            -derivedDataPath "$RUNNER_TEMP/MilazyTests" CODE_SIGNING_ALLOWED=NO \
+            test | tee "$RUNNER_TEMP/typing-tests.log"
       - name: Build unsigned device app
         run: |
           set -o pipefail
@@ -44,6 +52,9 @@ jobs:
           EXT="$APP/PlugIns/MilazyKeyboardExtension.appex"
           test -x "$APP/MilazyKeyboard"
           test -x "$EXT/MilazyKeyboardExtension"
+          test -s "$EXT/it.tsv"
+          test -s "$EXT/en.tsv"
+          test -s "$EXT/WORD_FREQUENCY_NOTICE.txt"
           /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" "$EXT/Info.plist" | grep -qx "com.apple.keyboard-service"
           /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionAttributes:RequestsOpenAccess" "$EXT/Info.plist" | grep -qx "true"
           echo "Host app and keyboard extension validated."
@@ -54,12 +65,11 @@ jobs:
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry MilazyKeyboard_V3_1_1_unsigned.ipa Payload
+          zip -qry MilazyKeyboard_V3_1_2_unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MilazyKeyboard_V3_1_1_unsigned
-          path: MilazyKeyboard_V3_1_1_unsigned.ipa
+          name: MilazyKeyboard_V3_1_2_unsigned
+          path: MilazyKeyboard_V3_1_2_unsigned.ipa
           if-no-files-found: error
-
 

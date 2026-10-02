@@ -114,8 +114,53 @@ enum TypingCoreTests {
         expect(SemanticFixRouting.needsDeepPass("Marco no venire io andare se piove forse casa", verbCount: 3), "Fragmented conditional uses semantic map")
         expect(SemanticFixRouting.needsDeepPass("mamma telefono lei detto dopo lavoro chiamare", verbCount: 2), "Ambiguous actor uses semantic map")
         expect(SemanticFixRouting.needsDeepPass("Sicuramente Gian se spero sei forte spero zyki ha sconfitta va beneee", verbCount: 4), "Two fragmented hopes use semantic map")
+        let corpusStart = ProcessInfo.processInfo.systemUptime
+        let directory = URL(fileURLWithPath: "Shared/Resources/TypingVocabulary")
+        guard let vocabulary = SpellVocabulary.load(directory: directory) else {
+            preconditionFailure("Bundled IT/EN frequency data must load")
+        }
+        expect(vocabulary.count > 12000, "Full bilingual vocabulary is loaded")
+        print("Corpus build: \(ProcessInfo.processInfo.systemUptime - corpusStart) seconds; \(vocabulary.count) words")
+        let bilingual = CorrectionIndex(personal: empty, mode: .automatic, vocabulary: vocabulary)
+        let italian = CorrectionIndex(personal: empty, mode: .italian, vocabulary: vocabulary)
+        expect(bilingual.correction(for: "osa", previous: nil) == "cosa", "Reported osa -> cosa")
+        expect(bilingual.correction(for: "far", previous: "cosa") == "fare", "Reported far -> fare in Italian context")
+        expect(bilingual.correction(for: "vediam", previous: "fare") == "vediamo", "Reported vediam -> vediamo")
+        expect(bilingual.correction(for: "Vediam", previous: nil) == "Vediamo", "Sentence-initial correction")
+        expect(italian.correction(for: "far", previous: nil) == "fare", "Forced Italian completion")
+        expect(bilingual.correction(for: "far", previous: "very") == nil, "Valid English far is preserved")
+        for word in ["cosa", "fare", "vediamo", "sono", "ciao", "hello", "keyboard"] {
+            expect(bilingual.correction(for: word, previous: nil) == nil, "Exact word preserved: " + word)
+        }
+        let repeats = LocalLanguageModel(defaults: defaults)
+        for _ in 0..<5 { repeats.learn(word: "vediam", previous: nil, confirmed: false) }
+        let repeatedIndex = CorrectionIndex(personal: repeats.snapshot(), mode: .automatic, vocabulary: vocabulary)
+        expect(repeatedIndex.correction(for: "vediam", previous: nil) == "vediamo", "Repeated typos never become protected")
+        repeats.rejectCorrection(for: "vediam")
+        let keptIndex = CorrectionIndex(personal: repeats.snapshot(), mode: .automatic, vocabulary: vocabulary)
+        expect(keptIndex.correction(for: "vediam", previous: nil) == nil, "Explicitly kept shorthand is protected")
+        let fullStart = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<1000 {
+            _ = bilingual.correction(for: "vediam", previous: "fare")
+        }
+        let fullElapsed = ProcessInfo.processInfo.systemUptime - fullStart
+        expect(fullElapsed < 2, "Real vocabulary Space decisions stay bounded")
+        print("1000 full-vocabulary Space decisions: \(fullElapsed) seconds")
+
+        var buffer = TypingContextBuffer()
+        let document = UUID()
+        _ = buffer.reconcile(context: "", document: document, now: 0)
+        for character in "vediam" { buffer.append(String(character), now: 0.01) }
+        _ = buffer.reconcile(context: "vedia", document: document, now: 0.02)
+        expect(buffer.context == "vediam", "Delayed host echo cannot drop final character")
+        expect(TextContext.currentWord(in: buffer.context ?? "") == "vediam", "Immediate Space sees full word")
+        _ = buffer.reconcile(context: "vediam", document: document, now: 0.03)
+        expect(buffer.context == "vediam", "Latest host echo acknowledged")
+        expect(buffer.reconcile(context: "ved", document: document, now: 0.5), "Cursor/edit changes replace buffer")
+        let otherDocument = UUID()
+        _ = buffer.reconcile(context: "hello", document: otherDocument, now: 0.6)
+        expect(buffer.context == "hello" && buffer.document == otherDocument, "Host document switch")
         print("Typing core regression checks passed")
     }
 }
-
 

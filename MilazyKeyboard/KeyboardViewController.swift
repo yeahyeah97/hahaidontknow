@@ -13,14 +13,21 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     var page: Page = .letters
     private var shifted = true
     var capitalization = CapitalizationState()
-    private var knownContext: String?
-    private var knownDocument: UUID?
+    private var typingBuffer = TypingContextBuffer()
+    private var applyingInput = false
+    private var hostCapitalization: CapitalizationState.Mode = .sentences
+    private var renderedShift: Bool?
+    private var lastAppearance: Bool?
+    private var feedbackPending = false
     private var lastShiftTap: TimeInterval = 0
     var aiTask: Task<Void, Never>?
     var inputRevision = 0
     private var predictionButtons: [UIButton] = []
     private var laidOutKeys: [(TouchKey, CGRect)] = []
-    private let predictionEngine = PredictionEngine()
+    var predictionEngine = PredictionEngine()
+    // Allows an in-process proxy for integration tests; production uses iOS's proxy.
+    var testingProxy: UITextDocumentProxy?
+    var inputProxy: UITextDocumentProxy { testingProxy ?? textDocumentProxy }
     private var predictionResult: PredictionEngine.Result?
     private var predictionContext: String?
     var undoCorrection: (source: String, replacement: String, context: String, document: UUID)?
@@ -64,6 +71,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         height.isActive = true
         view.clipsToBounds = false
         keyHaptic.prepare()
+        readHostState()
         buildChrome()
         rebuildKeys()
         syncAutoCapitalization()
@@ -106,22 +114,33 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         keyCanvas.cacheLayout()
     }
 
+    private func readHostState() {
+        _ = typingBuffer.reconcile(context: inputProxy.documentContextBeforeInput,
+                                   document: inputProxy.documentIdentifier)
+        switch inputProxy.autocapitalizationType ?? .sentences {
+        case .none: hostCapitalization = .none
+        case .words: hostCapitalization = .words
+        case .allCharacters: hostCapitalization = .allCharacters
+        default: hostCapitalization = .sentences
+        }
+    }
+
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
-        let context = textDocumentProxy.documentContextBeforeInput
-        if knownDocument != textDocumentProxy.documentIdentifier || context != knownContext {
-            inputRevision += 1
-            capitalization.reset()
-            predictionResult = nil
-            undoCorrection = nil
-        }
-        knownDocument = textDocumentProxy.documentIdentifier
-        knownContext = context
+        guard !applyingInput else { return }
+        let before = typingBuffer.context
+        let document = typingBuffer.document
+        let capitalizationMode = hostCapitalization
+        readHostState()
         updateReturnKey()
         updateAppearance()
+        guard before != typingBuffer.context || document != typingBuffer.document
+            || capitalizationMode != hostCapitalization else { return }
+        inputRevision += 1
+        capitalization.reset()
+        undoCorrection = nil
         syncAutoCapitalization()
-        refreshLetterCaps()
-        refreshPredictions()
+        schedulePredictionRefresh()
     }
 
     private func buildChrome() {
@@ -201,6 +220,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     func rebuildKeys() {
         keyCanvas.subviews.forEach { $0.removeFromSuperview() }
         laidOutKeys.removeAll()
+        renderedShift = nil
+        lastAppearance = nil
         spaceBadge = nil
 
         switch page {
@@ -386,7 +407,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     private func updateReturnKey() {
         guard let button = laidOutKeys.map({ $0.0 }).first(where: { $0.referenceRole == .returnKey }) else { return }
-        let type = textDocumentProxy.returnKeyType
+        let type = inputProxy.returnKeyType
         let title: String
         switch type {
         case .done: title = "✓"
@@ -402,12 +423,16 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         case .continue: title = "Continue"
         default: title = "↵"
         }
+        guard button.currentTitle != title else { return }
+        lastAppearance = nil
         button.setTitle(title, for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: title.count == 1 ? 24 : 16, weight: .regular)
     }
 
     func updateAppearance() {
-        let dark = textDocumentProxy.keyboardAppearance == .dark || traitCollection.userInterfaceStyle == .dark
+        let dark = inputProxy.keyboardAppearance == .dark || traitCollection.userInterfaceStyle == .dark
+        guard lastAppearance != dark else { return }
+        lastAppearance = dark
         let keyColor = dark ? UIColor(white: 67.0 / 255.0, alpha: 1) : .white
         view.backgroundColor = .clear
         inputView?.backgroundColor = .clear
@@ -426,7 +451,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         aiStatusLabel.textColor = dark ? UIColor.white.withAlphaComponent(0.86) : UIColor.label.withAlphaComponent(0.86)
         aiPanel.backgroundColor = .clear
 
-        let returnType = textDocumentProxy.returnKeyType
+        let returnType = inputProxy.returnKeyType
         let blueReturn = returnType != .default
         for (button, _) in laidOutKeys {
             if button.referenceRole == .returnKey && blueReturn {
@@ -442,43 +467,38 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func playKeyFeedback() {
+        guard !feedbackPending else { return }
+        feedbackPending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.feedbackPending = false
             let prefs = KeyboardPreferences.shared
             if prefs.sound { UIDevice.current.playInputClick() }
             if prefs.haptics {
                 self.keyHaptic.impactOccurred(intensity: 0.28)
-                self.keyHaptic.prepare()
             }
         }
     }
 
     private func syncAutoCapitalization(context: String? = nil) {
         guard page == .letters else { return }
-        let mode: CapitalizationState.Mode
-        switch textDocumentProxy.autocapitalizationType ?? .sentences {
-        case .none: mode = .none
-        case .words: mode = .words
-        case .allCharacters: mode = .allCharacters
-        default: mode = .sentences
-        }
         shifted = capitalization.uppercase(
-            context: context ?? textDocumentProxy.documentContextBeforeInput, mode: mode, current: shifted
+            context: context ?? typingBuffer.context, mode: hostCapitalization, current: shifted
         )
         refreshLetterCaps()
     }
 
     func didInsertText(expectedContext: String? = nil) {
         inputRevision += 1
-        knownDocument = textDocumentProxy.documentIdentifier
-        knownContext = textDocumentProxy.documentContextBeforeInput
-        syncAutoCapitalization(context: expectedContext)
+        if let expectedContext { typingBuffer.setAfterEdit(expectedContext) }
+        else { readHostState() }
+        syncAutoCapitalization()
         schedulePredictionRefresh()
     }
 
     private var allowsAutocorrection: Bool {
-        guard textDocumentProxy.autocorrectionType != .no else { return false }
-        switch textDocumentProxy.keyboardType {
+        guard inputProxy.autocorrectionType != .no else { return false }
+        switch inputProxy.keyboardType {
         case .URL, .emailAddress, .numberPad, .decimalPad, .phonePad, .asciiCapableNumberPad:
             return false
         default: return true
@@ -507,30 +527,35 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     @objc private func characterKey(_ sender: UIButton) {
         // The displayed title is the single source of truth for insertion.
         guard let value = sender.currentTitle, !value.isEmpty else { return }
-        let before = textDocumentProxy.documentContextBeforeInput
-        textDocumentProxy.insertText(value)
+        let before = typingBuffer.context
+        applyingInput = true
+        inputProxy.insertText(value)
         undoCorrection = nil
         lastSpaceTap = 0
         if page == .letters {
             capitalization.consumedLetter()
             shifted = false
         }
+        applyingInput = false
         didInsertText(expectedContext: before.map { $0 + value })
         playKeyFeedback()
     }
 
     @objc private func backspaceDown() {
-        if let undo = undoCorrection,
-           undo.document == textDocumentProxy.documentIdentifier,
-           undo.context == textDocumentProxy.documentContextBeforeInput {
-            for _ in undo.replacement + " " { textDocumentProxy.deleteBackward() }
-            textDocumentProxy.insertText(undo.source)
+        let context = typingBuffer.context
+        var expected = context.map { String($0.dropLast()) }
+        applyingInput = true
+        if let undo = undoCorrection, undo.document == typingBuffer.document, undo.context == context {
+            for _ in undo.replacement + " " { inputProxy.deleteBackward() }
+            inputProxy.insertText(undo.source)
+            expected = context.map { String($0.dropLast(undo.replacement.count + 1)) + undo.source }
             predictionEngine.learn(word: undo.source, previous: nil,
                 mode: KeyboardPreferences.shared.languageMode, rejectedCorrection: true)
-        } else { textDocumentProxy.deleteBackward() }
+        } else { inputProxy.deleteBackward() }
+        applyingInput = false
         undoCorrection = nil
         capitalization.consumedLetter()
-        didInsertText()
+        didInsertText(expectedContext: expected)
         playKeyFeedback()
     }
 
@@ -538,15 +563,11 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         switch gesture.state {
         case .began:
             backspaceTimer?.invalidate()
-            textDocumentProxy.deleteBackward()
-            playKeyFeedback()
-            didInsertText()
+            backspaceDown()
 
             backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.075, repeats: true) { [weak self] _ in
                 guard let self else { return }
-                self.textDocumentProxy.deleteBackward()
-                self.didInsertText()
-                self.playKeyFeedback()
+                self.backspaceDown()
             }
         case .ended, .cancelled, .failed:
             backspaceTimer?.invalidate()
@@ -559,15 +580,17 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     @objc private func spaceDown() {
         let now = Date.timeIntervalSinceReferenceDate
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let context = typingBuffer.context ?? ""
         let mode = KeyboardPreferences.shared.languageMode
         undoCorrection = nil
         if now - lastSpaceTap < 0.48, canInsertDoubleSpacePeriod(in: context) {
-            textDocumentProxy.deleteBackward()
-            textDocumentProxy.insertText(". ")
+            applyingInput = true
+            inputProxy.deleteBackward()
+            inputProxy.insertText(". ")
+            applyingInput = false
             lastSpaceTap = 0
             capitalization.consumedLetter()
-            didInsertText()
+            didInsertText(expectedContext: String(context.dropLast()) + ". ")
             playKeyFeedback()
             return
         }
@@ -576,6 +599,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         let source = TextContext.currentWord(in: context)
         var committed = source
         var applied: String?
+        applyingInput = true
         if allowsAutocorrection, let source {
             let cached = predictionResult.flatMap { $0.context == context ? $0.correction : nil }
             let replacement = cached ?? predictionEngine.localCorrection(
@@ -587,12 +611,14 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
                 applied = replacement
             }
         }
-        textDocumentProxy.insertText(" ")
+        inputProxy.insertText(" ")
+        applyingInput = false
         lastSpaceTap = now
         capitalization.consumedLetter()
-        didInsertText()
-        if let source, let applied, let after = textDocumentProxy.documentContextBeforeInput {
-            undoCorrection = (source, applied, after, textDocumentProxy.documentIdentifier)
+        let after = applied.map { String(context.dropLast(source?.count ?? 0)) + $0 + " " } ?? context + " "
+        didInsertText(expectedContext: after)
+        if let source, let applied, let document = typingBuffer.document {
+            undoCorrection = (source, applied, after, document)
         }
         if let committed {
             // Automatically applied guesses never teach source -> replacement mappings.
@@ -602,12 +628,14 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     @objc private func returnDown() {
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let context = typingBuffer.context ?? ""
         let word = TextContext.currentWord(in: context)
-        textDocumentProxy.insertText("\n")
+        applyingInput = true
+        inputProxy.insertText("\n")
+        applyingInput = false
         undoCorrection = nil
         capitalization.consumedLetter()
-        didInsertText()
+        didInsertText(expectedContext: context + "\n")
         if let word {
             predictionEngine.learn(word: word, previous: TextContext.previousWord(in: context),
                                    mode: KeyboardPreferences.shared.languageMode)
@@ -624,7 +652,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func refreshLetterCaps() {
-        guard page == .letters else { return }
+        guard page == .letters, renderedShift != shifted else { return }
+        renderedShift = shifted
         for (button, _) in laidOutKeys {
             if button.referenceRole == .shift {
                 button.setImage(UIImage(systemName: shifted ? "shift.fill" : "shift"), for: .normal)
@@ -662,7 +691,6 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         predictionGeneration += 1
         predictionResult = nil
         predictionContext = nil
-        setPredictions(["", "", ""])
         predictionEngine.cancel()
         let generation = predictionGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
@@ -672,7 +700,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func currentWord() -> String? {
-        textDocumentProxy.documentContextBeforeInput.flatMap { TextContext.currentWord(in: $0) }
+        typingBuffer.context.flatMap { TextContext.currentWord(in: $0) }
     }
 
     func words(in text: String) -> [String] { TextContext.words(in: text) }
@@ -682,17 +710,16 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         predictionResult = nil
         predictionContext = nil
         predictionEngine.cancel()
-        guard page == .letters, let context = textDocumentProxy.documentContextBeforeInput else {
+        guard page == .letters, let context = typingBuffer.context, let document = typingBuffer.document else {
             setPredictions(["", "", ""])
             return
         }
         let generation = predictionGeneration
-        let document = textDocumentProxy.documentIdentifier
         let mode = KeyboardPreferences.shared.languageMode
         predictionEngine.request(context: context, document: document, mode: mode) { [weak self] result in
             guard let self, self.predictionGeneration == generation,
-                  self.page == .letters, self.textDocumentProxy.documentIdentifier == document,
-                  self.textDocumentProxy.documentContextBeforeInput == result.context,
+                  self.page == .letters, self.typingBuffer.document == document,
+                  self.typingBuffer.context == result.context,
                   KeyboardPreferences.shared.languageMode == mode else { return }
             self.predictionResult = result
             self.predictionContext = result.context
@@ -704,31 +731,33 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     private func setPredictions(_ values: [String]) {
         for (index, button) in predictionButtons.enumerated() {
-            button.setTitle(index < values.count ? values[index] : "", for: .normal)
+            let value = index < values.count ? values[index] : ""
+            if button.currentTitle != value { button.setTitle(value, for: .normal) }
         }
     }
 
     @objc private func usePrediction(_ sender: UIButton) {
         guard let value = sender.currentTitle, !value.isEmpty,
-              let context = textDocumentProxy.documentContextBeforeInput,
+              let context = typingBuffer.context,
               predictionContext == context else { return }
         let before = currentWord()
         let previous = TextContext.previousWord(in: context)
+        applyingInput = true
         if before != nil { replaceCurrentWord(with: value) }
-        else { textDocumentProxy.insertText(value) }
+        else { inputProxy.insertText(value) }
+        applyingInput = false
         undoCorrection = nil
-        didInsertText()
+        didInsertText(expectedContext: String(context.dropLast(before?.count ?? 0)) + value)
         predictionEngine.learn(word: value, previous: previous,
             mode: KeyboardPreferences.shared.languageMode, selectedFrom: before)
     }
 
     private func replaceCurrentWord(with replacement: String) {
         guard let word = currentWord() else { return }
-        for _ in word { textDocumentProxy.deleteBackward() }
-        textDocumentProxy.insertText(replacement)
+        for _ in word { inputProxy.deleteBackward() }
+        inputProxy.insertText(replacement)
     }
 
 }
-
 
 

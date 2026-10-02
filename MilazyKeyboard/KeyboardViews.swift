@@ -21,46 +21,53 @@ final class TouchKey: UIButton {
     private var initialPoint: CGPoint?
     private var initialFrame: CGRect = .zero
 
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
         touchStartText = currentTitle ?? ""
-        initialPoint = touches.first.flatMap { touch in
-            superview.map { touch.location(in: $0) }
-        }
+        initialPoint = superview.map { touch.location(in: $0) }
         initialFrame = frame
-        // UIButton sends touchDown first, so insertion precedes popup or learning.
-        super.touchesBegan(touches, with: event)
-        onFingerBegan?(self, touchStartText)
+        let accepted = super.beginTracking(touch, with: event)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isTracking else { return }
+            self.onFingerBegan?(self, self.touchStartText)
+        }
+        return accepted
     }
 
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let touch = touches.first, let container = superview {
+    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        let accepted = super.continueTracking(touch, with: event)
+        if let container = superview {
             onFingerMoved?(self, touch.location(in: container), touchStartText)
         }
-        super.touchesMoved(touches, with: event)
+        return accepted
     }
 
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let touch = touches.first, let container = superview {
+    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
+        super.endTracking(touch, with: event)
+        if let touch, let container = superview {
             onFingerEnded?(self, touch.location(in: container), touchStartText)
-        } else {
-            onFingerCancelled?()
-        }
-        super.touchesEnded(touches, with: event)
+        } else { onFingerCancelled?() }
         if let point = initialPoint, let key = learningKey {
             TouchLearningModel.shared.record(key: key, point: point, frame: initialFrame)
         }
         initialPoint = nil
     }
 
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+    override func cancelTracking(with event: UIEvent?) {
+        super.cancelTracking(with: event)
         initialPoint = nil
         onFingerCancelled?()
-        super.touchesCancelled(touches, with: event)
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.contains(point)
+        let hitbox = KeyboardPreferences.shared.hitboxMode
+        return bounds.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY).contains(point)
     }
+
+    override func accessibilityActivate() -> Bool {
+        sendActions(for: .touchDown)
+        return true
+    }
+
 }
 
 final class KeyPreviewView: UIView {
@@ -123,5 +130,4 @@ final class KeyCanvasView: UIView {
         return keys[id]
     }
 }
-
 

@@ -1,7 +1,7 @@
 import Foundation
 
-// A small original vocabulary supplements UITextChecker. It supplies immediate
-// conservative decisions when the last asynchronous spellcheck has not finished.
+// Shared frequency data supplements UITextChecker and supplies immediate local
+// decisions when the last asynchronous spellcheck has not finished.
 struct CorrectionIndex {
     private static let italian = """
     a ad al alla allo alle ai agli anche ancora andare anno anni amico amica amici
@@ -46,42 +46,38 @@ struct CorrectionIndex {
         "qunado": "quando", "qaundo": "quando", "buongirono": "buongiorno"
     ]
 
-    private var vocabulary: Set<String>
+    private let vocabulary: SpellVocabulary
     private var protectedWords: Set<String>
-    private var signatures: [String: Set<String>] = [:]
     private var explicit: [String: String]
     private var learned: [String: String] = [:]
     private var personal: LocalLanguageModel.Snapshot
     private var validSystemWords: Set<String>
     let mode: KeyboardPreferences.LanguageMode
+    var dominant: BilingualLanguageState.Language = .italian
+
+    static let fallback = SpellVocabulary(
+        italian: italian.split(whereSeparator: { $0.isWhitespace }).map { (String($0), 4.8) },
+        english: english.split(whereSeparator: { $0.isWhitespace }).map { (String($0), 4.8) }
+    )
 
     init(personal: LocalLanguageModel.Snapshot, mode: KeyboardPreferences.LanguageMode,
-         lexicon: [(String, String)] = [], validSystemWords: Set<String> = []) {
+         lexicon: [(String, String)] = [], validSystemWords: Set<String> = [],
+         vocabulary: SpellVocabulary = CorrectionIndex.fallback) {
         self.personal = personal
         self.mode = mode
         self.validSystemWords = validSystemWords
-        let raw = mode == .italian ? Self.italian : (mode == .english ? Self.english : Self.italian + " " + Self.english)
-        let baseWords = Set(raw.split(whereSeparator: { $0.isWhitespace }).map(String.init))
-        vocabulary = baseWords
-        protectedWords = Set(personal.words.filter { $0.value >= 2 }.keys)
-        explicit = Self.commonTypos.filter { baseWords.contains($0.value) }
+        self.vocabulary = vocabulary
+        protectedWords = Set(personal.confirmedWords.keys)
+        explicit = Self.commonTypos.filter { vocabulary.frequency($0.value, mode: mode) > 0 }
         for (input, output) in lexicon {
             if !input.isEmpty, !output.isEmpty {
                 protectedWords.insert(output.lowercased())
                 if input.lowercased() != output.lowercased() { explicit[input.lowercased()] = output }
-                if !output.contains(where: { $0.isWhitespace }) { vocabulary.insert(output.lowercased()) }
             }
         }
         for (key, count) in personal.corrections.sorted(by: { $0.value > $1.value }) {
             let pair = key.components(separatedBy: "\u{1F}")
             if pair.count == 2, count > 0, learned[pair[0]] == nil { learned[pair[0]] = pair[1] }
-        }
-        // Keep all learned names protected, but cap the fuzzy index to limit
-        // keyboard-extension memory. Long-tail names need no fuzzy signatures.
-        vocabulary.formUnion(personal.words.filter { $0.value >= 2 }
-            .sorted { $0.value > $1.value }.prefix(512).map { $0.key })
-        for word in vocabulary where word.count <= 32 {
-            for signature in Self.deletions(word) { signatures[signature, default: []].insert(word) }
         }
     }
 
@@ -99,38 +95,57 @@ struct CorrectionIndex {
 
     func keeps(_ word: String) -> Bool {
         let lower = word.lowercased()
-        return vocabulary.contains(lower) || protectedWords.contains(lower) || validSystemWords.contains(lower)
+        return vocabulary.frequency(lower, mode: mode) > 0 || protects(lower) || validSystemWords.contains(lower)
     }
 
-    func correction(for source: String, previous: String?) -> String? {
+    func protects(_ word: String) -> Bool { protectedWords.contains(word.lowercased()) }
+    func dictionaryFrequency(of word: String) -> Double { vocabulary.frequency(word, mode: mode) }
+
+    func intentionalReplacement(for source: String) -> String? {
         let lower = source.lowercased()
-        guard (3...32).contains(source.count), !source.contains(where: { $0.isNumber }),
-              !protectedWords.contains(lower) else { return nil }
-        // User selections and system text replacements are intentional even if the
-        // source is a valid abbreviation. Repeatedly kept words remain protected.
-        if let replacement = learned[lower] {
-            return TextContext.matchCase(replacement, source: source)
+        guard !protects(lower) else { return nil }
+        return (learned[lower] ?? explicit[lower]).map { TextContext.matchCase($0, source: source) }
+    }
+
+    func correction(for source: String, previous: String?, systemGuesses: [String] = []) -> String? {
+        let lower = source.lowercased()
+        guard (3...24).contains(source.count), !source.contains(where: { $0.isNumber }),
+              !protects(lower) else { return nil }
+        if let intentional = intentionalReplacement(for: source) { return intentional }
+        if Self.commonTypos[lower] != nil && explicit[lower] == nil && mode != .automatic { return nil }
+        let previousIT = previous.map { vocabulary.frequency($0, mode: .italian) } ?? 0
+        let previousEN = previous.map { vocabulary.frequency($0, mode: .english) } ?? 0
+        let italianContext = mode == .italian || (mode == .automatic && previousIT - previousEN >= 0.8)
+        let effectiveMode: KeyboardPreferences.LanguageMode = italianContext ? .italian : mode
+        let sourceFrequency = vocabulary.frequency(lower, mode: effectiveMode)
+        let validSource = sourceFrequency > 0 || validSystemWords.contains(lower)
+        if sourceFrequency == 0 && validSystemWords.contains(lower) { return nil }
+        // English words and common exact words are stable. Rare Italian fragments
+        // may expand to a much more frequent word in Italian context (far -> fare).
+        if validSource && !italianContext && sourceFrequency >= 4.2 { return nil }
+        var candidates = vocabulary.candidates(for: lower, mode: effectiveMode).map { $0.word }
+        for word in systemGuesses.prefix(8) where !candidates.contains(word.lowercased()) {
+            candidates.append(word.lowercased())
         }
-        if let replacement = explicit[lower] { return TextContext.matchCase(replacement, source: source) }
-        guard !keeps(source), source.first?.isUppercase != true else { return nil }
-        var candidates: Set<String> = []
-        for signature in Self.deletions(lower) {
-            candidates.formUnion(signatures[signature] ?? [])
-            if candidates.count > 64 { return nil }
-        }
-        let scored: [(String, Double)] = candidates.compactMap { word in
-            guard word != lower, Self.editDistance(lower, word) <= 1 else { return nil }
-            let score = Double(personal.frequency(of: word)) * 2
-                + Double(personal.contextFrequency(word, previous: previous)) * 6
+        let ranked: [(String, Double)] = candidates.compactMap { word in
+            let distance = Self.editDistance(lower, word)
+            guard word != lower, distance <= (lower.count >= 6 ? 2 : 1) else { return nil }
+            let frequency = vocabulary.frequency(word, mode: effectiveMode)
+            guard frequency >= 3.5 else { return nil }
+            let isCompletion = word.hasPrefix(lower) && word.count == lower.count + 1
+            let missingFirst = word.hasSuffix(lower) && word.count == lower.count + 1
+            let cost = distance > 1 ? 1.6 : (isCompletion ? 0.35 : (missingFirst ? 0.45 : 0.95))
+            let score = frequency - cost
+                + min(0.6, log1p(Double(personal.frequency(of: word))) * 0.1)
+                + min(1.0, log1p(Double(personal.contextFrequency(word, previous: previous))) * 0.3)
+            if validSource {
+                let gain = frequency - sourceFrequency
+                guard gain >= (italianContext && isCompletion ? 0.45 : 2.0) else { return nil }
+            }
             return (word, score)
-        }
-        let ranked = scored.sorted { lhs, rhs in
-            lhs.1 == rhs.1 ? lhs.0 < rhs.0 : lhs.1 > rhs.1
-        }
+        }.sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
         guard let best = ranked.first else { return nil }
-        // Preserve short slang and ambiguous typos. Never guess arbitrarily on ties.
-        guard lower.count >= 5 || best.1 >= 4 else { return nil }
-        if ranked.count > 1 && best.1 - ranked[1].1 < 3 { return nil }
+        if ranked.count > 1 && best.1 - ranked[1].1 < 0.4 { return nil }
         return TextContext.matchCase(best.0, source: source)
     }
 
@@ -158,5 +173,4 @@ struct CorrectionIndex {
         return previous[b.count]
     }
 }
-
 
