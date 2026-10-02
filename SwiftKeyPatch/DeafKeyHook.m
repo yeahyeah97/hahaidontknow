@@ -733,7 +733,7 @@ static void DKGridCellTap(id self, SEL _cmd) {
 }
 
 static void DKTryInstallHooks(void) {
-    Class toolbar = DKFindClass(@"SKCandidateToolbarView");
+    Class toolbar = DKFindClass(@"SKToolbarCandidateBarView");
 
     if (toolbar && !gToolbarHooked) {
         gToolbarLayoutOriginal =
