@@ -61,9 +61,10 @@ struct CorrectionIndex {
         self.mode = mode
         self.validSystemWords = validSystemWords
         let raw = mode == .italian ? Self.italian : (mode == .english ? Self.english : Self.italian + " " + Self.english)
-        vocabulary = Set(raw.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+        let baseWords = Set(raw.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+        vocabulary = baseWords
         protectedWords = Set(personal.words.filter { $0.value >= 2 }.keys)
-        explicit = Self.commonTypos.filter { vocabulary.contains($0.value) }
+        explicit = Self.commonTypos.filter { baseWords.contains($0.value) }
         for (input, output) in lexicon {
             if !input.isEmpty, !output.isEmpty {
                 protectedWords.insert(output.lowercased())
