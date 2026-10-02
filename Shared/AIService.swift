@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import NaturalLanguage
 
 enum AIAction {
     case fix
@@ -174,75 +175,48 @@ final class AIService {
     }
 
     func transform(_ text: String, action: AIAction) async -> String? {
-        guard let key = apiKey else { return nil }
-
-        if action == .fix {
-            if needsDeepSemanticPass(text) {
-                let map = await generate(
-                    text: text,
-                    instruction: action.semanticAnalysisInstruction,
-                    apiKey: key,
-                    maxOutputTokens: 240
-                )
-
-                if let map, !map.isEmpty {
-                    let combined = """
-                    ORIGINAL TEXT:
-                    \(text)
-
-                    SEMANTIC MAP:
-                    \(map)
-                    """
-                    if let final = await generate(
-                        text: combined,
-                        instruction: action.instruction,
-                        apiKey: key,
-                        maxOutputTokens: 420
-                    ) {
-                        return final
-                    }
-                }
-            } else {
-                let quick = """
-                Correct spelling, grammar, punctuation, and obvious typing mistakes.
-                Preserve the exact meaning, language, names, slang, tone, negation, tense and who is doing what to whom.
-                Return only the corrected text.
-                """
-                if let result = await generate(text: text, instruction: quick, apiKey: key, maxOutputTokens: 320) {
-                    return result
-                }
-            }
+        guard let key = apiKey, !Task.isCancelled else { return nil }
+        let outputLimit = min(4096, max(420, text.count / 2 + 100))
+        guard action == .fix else {
+            return await generate(text: text, instruction: action.instruction,
+                                  apiKey: key, maxOutputTokens: outputLimit)
         }
+        if needsDeepSemanticPass(text) {
+            guard let map = await generate(text: text,
+                instruction: action.semanticAnalysisInstruction,
+                apiKey: key, maxOutputTokens: 900), !map.isEmpty, !Task.isCancelled else { return nil }
+            let combined = """
+            ORIGINAL TEXT:
+            \(text)
 
-        return await generate(
-            text: text,
-            instruction: action.instruction,
-            apiKey: key,
-            maxOutputTokens: 420
-        )
+            SEMANTIC MAP (interpretation hypothesis, never override the original):
+            \(map)
+            """
+            return await generate(text: combined, instruction: action.instruction,
+                                  apiKey: key, maxOutputTokens: outputLimit)
+        }
+        let quick = """
+        Reconstruct the intended natural message before correcting spelling and grammar.
+        Preserve language, subjects, targets, wishes, fears, negation, tense, conditions,
+        causal relationships, and fact versus desired or hypothetical outcome exactly.
+        Preserve names, slang, numbers, emojis and tone. Do not invent missing facts.
+        Keep ambiguous relationships conservative. Return only the corrected message.
+        """
+        // Exactly one network request for simple text, including failures.
+        return await generate(text: text, instruction: quick,
+                              apiKey: key, maxOutputTokens: outputLimit)
     }
 
     private func needsDeepSemanticPass(_ text: String) -> Bool {
-        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return false }
-
-        let words = cleaned.split { !$0.isLetter && !$0.isNumber }
-        if words.count <= 5 { return true }
-
-        let punctuationCount = cleaned.filter { ".!?,;:".contains($0) }.count
-        let punctuationRatio = Double(punctuationCount) / Double(max(words.count, 1))
-
-        let lower = cleaned.lowercased()
-        let scopeWords = [
-            "spero","voglio","vorrei","deve","può","forse","se ","perché","penso","credo",
-            "hope","want","wish","must","maybe","if ","because","think"
-        ]
-        let hasScopeMarker = scopeWords.contains { lower.contains($0) }
-
-        let shortFragments = words.filter { $0.count <= 3 }.count
-        let compressed = punctuationRatio < 0.08 && shortFragments >= max(3, words.count / 3)
-
-        return hasScopeMarker || compressed
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = text
+        var verbs = 0
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word,
+            scheme: .lexicalClass, options: [.omitWhitespace, .omitPunctuation]) { tag, _ in
+            if tag == .verb { verbs += 1 }
+            return true
+        }
+        return SemanticFixRouting.needsDeepPass(text, verbCount: verbs)
     }
 
     private func generate(
@@ -295,16 +269,17 @@ final class AIService {
             }
 
             for candidate in candidates {
-                guard let content = candidate["content"] as? [String: Any],
+                guard candidate["finishReason"] as? String != "MAX_TOKENS",
+                      let content = candidate["content"] as? [String: Any],
                       let parts = content["parts"] as? [[String: Any]] else {
                     continue
                 }
 
-                for part in parts {
-                    if let value = part["text"] as? String, !value.isEmpty {
-                        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-                    }
-                }
+                let text = parts.compactMap { part -> String? in
+                    guard part["thought"] as? Bool != true else { return nil }
+                    return part["text"] as? String
+                }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { return text }
             }
 
             return nil
@@ -314,3 +289,5 @@ final class AIService {
     }
 
 }
+
+

@@ -11,14 +11,9 @@ final class TouchKey: UIButton {
 
     override var isHighlighted: Bool {
         didSet {
-            if isHighlighted {
-                transform = CGAffineTransform(scaleX: 0.99, y: 0.99)
-                alpha = 0.86
-            } else {
-                UIView.animate(withDuration: 0.045, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-                    self.transform = .identity
-                    self.alpha = 1
-                }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.alpha = self.isHighlighted ? 0.86 : 1
             }
         }
     }
@@ -58,6 +53,7 @@ final class TouchKey: UIButton {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        initialPoint = nil
         onFingerCancelled?()
         super.touchesCancelled(touches, with: event)
     }
@@ -127,3 +123,5 @@ final class KeyCanvasView: UIView {
         return keys[id]
     }
 }
+
+

@@ -100,6 +100,14 @@ enum TypingCoreTests {
         let elapsed = Date.timeIntervalSinceReferenceDate - start
         expect(elapsed < 3, "Bounded Space decisions: 1000 calls within 3 seconds on CI")
         print("1000 local Space decisions: \(elapsed) seconds")
+        expect(!SemanticFixRouting.needsDeepPass("I am tired.", verbCount: 1), "Simple English uses one request")
+        expect(!SemanticFixRouting.needsDeepPass("Sono stanco.", verbCount: 1), "Simple Italian uses one request")
+        expect(!SemanticFixRouting.needsDeepPass("Spero che tu stia bene.", verbCount: 2), "Grammatical wish uses one request")
+        expect(!SemanticFixRouting.needsDeepPass("Mamma ha detto che mi chiamerà dopo il lavoro.", verbCount: 3), "Complete relationships use one request")
+        expect(SemanticFixRouting.needsDeepPass("armadio porta arancione", verbCount: 0), "Noun fragment uses semantic map")
+        expect(SemanticFixRouting.needsDeepPass("Marco no venire io andare se piove forse casa", verbCount: 3), "Fragmented conditional uses semantic map")
+        expect(SemanticFixRouting.needsDeepPass("mamma telefono lei detto dopo lavoro chiamare", verbCount: 2), "Ambiguous actor uses semantic map")
+        expect(SemanticFixRouting.needsDeepPass("Sicuramente Gian se spero sei forte spero zyki ha sconfitta va beneee", verbCount: 4), "Two fragmented hopes use semantic map")
         print("Typing core regression checks passed")
     }
 }

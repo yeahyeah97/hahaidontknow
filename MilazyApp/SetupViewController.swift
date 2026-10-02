@@ -50,7 +50,7 @@ final class SetupViewController: UIViewController, UITextFieldDelegate {
         title.textAlignment = .center
 
         let version = UILabel()
-        version.text = "3.1.0 · Adaptive Touch Engine"
+        version.text = "3.1.1 · Adaptive Touch Engine"
         version.font = .systemFont(ofSize: 14, weight: .semibold)
         version.textColor = UIColor.white.withAlphaComponent(0.58)
         version.textAlignment = .center
@@ -211,3 +211,5 @@ final class SetupViewController: UIViewController, UITextFieldDelegate {
         return true
     }
 }
+
+

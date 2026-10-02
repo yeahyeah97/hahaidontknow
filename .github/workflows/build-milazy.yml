@@ -20,7 +20,7 @@ jobs:
           xcodebuild -showsdks
       - name: Test typing core
         run: |
-          swiftc -O Shared/KeyboardPreferences.swift Shared/LocalLanguageModel.swift Shared/BilingualLanguageState.swift Shared/CorrectionIndex.swift Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
+          swiftc -O Shared/SemanticFixRouting.swift Shared/KeyboardPreferences.swift Shared/LocalLanguageModel.swift Shared/BilingualLanguageState.swift Shared/CorrectionIndex.swift Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
           "$RUNNER_TEMP/TypingCoreTests"
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -54,12 +54,12 @@ jobs:
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry MilazyKeyboard_V3_1_0_unsigned.ipa Payload
+          zip -qry MilazyKeyboard_V3_1_1_unsigned.ipa Payload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MilazyKeyboard_V3_1_0_unsigned
-          path: MilazyKeyboard_V3_1_0_unsigned.ipa
+          name: MilazyKeyboard_V3_1_1_unsigned
+          path: MilazyKeyboard_V3_1_1_unsigned.ipa
           if-no-files-found: error
 
 
