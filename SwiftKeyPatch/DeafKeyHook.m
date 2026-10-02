@@ -2,14 +2,35 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-static const NSInteger DKAIButtonTag = 0xDA7101;
-static const NSInteger DKToastTag = 0xDA7102;
+static const NSInteger DKAIButtonTag = 0xDA8201;
+static const NSInteger DKToastTag = 0xDA8202;
 
 static IMP gToolbarLayoutOriginal = NULL;
-static IMP gCellOriginal = NULL;
-static IMP gSizeOriginal = NULL;
+static IMP gRendererSpaceOriginal = NULL;
+static IMP gMenuSizeOriginal = NULL;
+static IMP gGridCellLayoutOriginal = NULL;
+static IMP gGridCellTapOriginal = NULL;
+
+static BOOL gToolbarHooked = NO;
+static BOOL gRendererHooked = NO;
+static BOOL gMenuHooked = NO;
+static BOOL gGridCellHooked = NO;
+
+static NSString *DKLower(NSString *s) {
+    return [s isKindOfClass:[NSString class]] ? s.lowercaseString : @"";
+}
+
+static BOOL DKContains(NSString *value, NSArray<NSString *> *needles) {
+    NSString *lower = DKLower(value);
+    for (NSString *needle in needles) {
+        if ([lower containsString:needle.lowercaseString]) return YES;
+    }
+    return NO;
+}
 
 static NSString *DKText(UIView *view) {
+    if (!view) return @"";
+
     NSMutableString *out = [NSMutableString string];
 
     if ([view isKindOfClass:[UILabel class]]) {
@@ -37,22 +58,77 @@ static NSString *DKText(UIView *view) {
     return out;
 }
 
-static BOOL DKContains(NSString *value, NSArray<NSString *> *needles) {
-    NSString *lower = value.lowercaseString ?: @"";
-    for (NSString *needle in needles) {
-        if ([lower containsString:needle.lowercaseString]) return YES;
+static Class DKFindClassSuffix(NSString *suffix) {
+    int count = objc_getClassList(NULL, 0);
+    if (count <= 0) return Nil;
+
+    Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
+    count = objc_getClassList(classes, count);
+
+    Class found = Nil;
+
+    for (int i = 0; i < count; i++) {
+        const char *raw = class_getName(classes[i]);
+        if (!raw) continue;
+
+        NSString *name = [NSString stringWithUTF8String:raw];
+
+        if ([name hasSuffix:suffix]
+            || [name containsString:suffix]) {
+            found = classes[i];
+            break;
+        }
     }
-    return NO;
+
+    free(classes);
+    return found;
+}
+
+static BOOL DKMethodIsDirect(Class cls, SEL selector) {
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    BOOL result = NO;
+
+    for (unsigned int i = 0; i < count; i++) {
+        if (method_getName(methods[i]) == selector) {
+            result = YES;
+            break;
+        }
+    }
+
+    free(methods);
+    return result;
+}
+
+static IMP DKHook(Class cls, SEL selector, IMP replacement) {
+    if (!cls) return NULL;
+
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return NULL;
+
+    IMP original = method_getImplementation(method);
+    const char *types = method_getTypeEncoding(method);
+
+    if (!DKMethodIsDirect(cls, selector)) {
+        if (class_addMethod(cls, selector, replacement, types)) {
+            return original;
+        }
+    }
+
+    method_setImplementation(class_getInstanceMethod(cls, selector), replacement);
+    return original;
 }
 
 static UIInputViewController *DKInputController(UIResponder *responder) {
     UIResponder *current = responder;
+
     while (current) {
         if ([current isKindOfClass:[UIInputViewController class]]) {
             return (UIInputViewController *)current;
         }
         current = current.nextResponder;
     }
+
     return nil;
 }
 
@@ -62,7 +138,7 @@ static void DKToast(UIView *root, NSString *message) {
     [[root viewWithTag:DKToastTag] removeFromSuperview];
 
     UILabel *label = [[UILabel alloc] initWithFrame:
-        CGRectMake(12, 42, MAX(120, root.bounds.size.width - 24), 34)];
+        CGRectMake(12, 40, MAX(120, root.bounds.size.width - 24), 36)];
 
     label.tag = DKToastTag;
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -70,7 +146,7 @@ static void DKToast(UIView *root, NSString *message) {
     label.textAlignment = NSTextAlignmentCenter;
     label.textColor = UIColor.whiteColor;
     label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.96];
+    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.97];
     label.layer.cornerRadius = 10;
     label.layer.masksToBounds = YES;
 
@@ -94,6 +170,7 @@ static NSString *DKAPIKey(void) {
 
 static void DKSaveAPIKey(UIView *root) {
     NSString *value = [UIPasteboard generalPasteboard].string;
+
     value = [value stringByTrimmingCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
 
@@ -112,13 +189,14 @@ static void DKSaveAPIKey(UIView *root) {
 static BOOL DKNeedsDeepPass(NSString *text) {
     NSString *lower = text.lowercaseString;
 
-    NSArray *scope = @[
+    NSArray *markers = @[
         @"spero", @"voglio", @"vorrei", @"forse", @" se ",
-        @"perché", @"penso", @"credo", @"hope", @"want",
-        @"wish", @"maybe", @" if ", @"because", @"think"
+        @"perché", @"penso", @"credo",
+        @"hope", @"want", @"wish", @"maybe", @" if ",
+        @"because", @"think"
     ];
 
-    for (NSString *marker in scope) {
+    for (NSString *marker in markers) {
         if ([lower containsString:marker]) return YES;
     }
 
@@ -149,12 +227,12 @@ static BOOL DKNeedsDeepPass(NSString *text) {
 
 static NSString *DKSemanticPrompt(void) {
     return @"Analyze the fragmented message before rewriting it. "
-    "Build a compact semantic map containing: SPEAKER_GOAL; ENTITIES_AND_REFERENCES; "
+    "Build a compact semantic map containing SPEAKER_GOAL, ENTITIES_AND_REFERENCES, "
     "SEMANTIC_ROLES (who does/thinks/wants what, to/about whom, when, where, why, "
-    "condition and result); RELATION_GRAPH; MODALITY_SCOPE; DESIRED_OR_FEARED_OUTCOME; "
-    "EVENT_STATUS (fact, plan, hypothetical, possibility, wish, fear, command, question, unknown); "
-    "POLARITY; IMPLICIT_QUESTIONS; OMITTED_LINKS; UNCERTAINTY. "
-    "Do not merge adjacent fragments automatically. Preserve negation, conditions, "
+    "condition and result), RELATION_GRAPH, MODALITY_SCOPE, DESIRED_OR_FEARED_OUTCOME, "
+    "EVENT_STATUS (fact, plan, hypothetical, possibility, wish, fear, command, question, unknown), "
+    "POLARITY, IMPLICIT_QUESTIONS, OMITTED_LINKS and UNCERTAINTY. "
+    "Do not merge nearby fragments automatically. Preserve negation, conditions, "
     "actor/target relationships and whether something happened or is only desired. "
     "Do not invent facts. Be concise.";
 }
@@ -164,7 +242,7 @@ static NSString *DKFinalPrompt(void) {
     "Use the semantic map only as an interpretation aid; ORIGINAL TEXT is the source of truth. "
     "Preserve language, names, places, numbers, slang, tone and concrete facts. "
     "Preserve who does/thinks/wants/asks what, toward whom or what, negation, tense, "
-    "conditions, causes, and whether each event is a fact, wish, fear, possibility, "
+    "conditions, causes and whether each event is a fact, wish, fear, possibility, "
     "question, command or plan. Keep separate intentions separate. "
     "Turn implicit questions into natural explicit questions only when supported. "
     "Do not invent facts. If uncertain, use conservative wording. "
@@ -271,9 +349,7 @@ static void DKReplaceContext(UIInputViewController *controller,
 }
 
 static void DKRunFix(UIButton *button) {
-    UIInputViewController *controller =
-        DKInputController(button);
-
+    UIInputViewController *controller = DKInputController(button);
     UIView *root = controller.view ?: button.window;
 
     if (!controller) {
@@ -355,8 +431,8 @@ static void DKRunFix(UIButton *button) {
 
 @interface DKActionTarget : NSObject
 + (instancetype)shared;
-- (void)tap:(UIButton *)sender;
-- (void)hold:(UILongPressGestureRecognizer *)sender;
+- (void)tapAI:(UIButton *)sender;
+- (void)holdAI:(UILongPressGestureRecognizer *)sender;
 @end
 
 @implementation DKActionTarget
@@ -370,11 +446,11 @@ static void DKRunFix(UIButton *button) {
     return target;
 }
 
-- (void)tap:(UIButton *)sender {
+- (void)tapAI:(UIButton *)sender {
     DKRunFix(sender);
 }
 
-- (void)hold:(UILongPressGestureRecognizer *)sender {
+- (void)holdAI:(UILongPressGestureRecognizer *)sender {
     if (sender.state == UIGestureRecognizerStateBegan) {
         DKSaveAPIKey(sender.view);
     }
@@ -382,50 +458,14 @@ static void DKRunFix(UIButton *button) {
 
 @end
 
-static UIView *DKFindCopilotControl(UIView *root) {
-    for (UIView *sub in root.subviews) {
-        NSString *text = DKText(sub);
-
-        if ([sub isKindOfClass:[UIControl class]]
-            && DKContains(text, @[
-                @"copilot",
-                @"id_toolbar_copilot"
-            ])) {
-            return sub;
-        }
-
-        UIView *nested = DKFindCopilotControl(sub);
-        if (nested) return nested;
-    }
-
-    return nil;
-}
-
 static void DKInstallAIButton(UIView *toolbar) {
-    UIView *copilot = DKFindCopilotControl(toolbar);
-
-    CGRect slot =
-        CGRectMake(4,
-                   3,
-                   44,
-                   MAX(28, toolbar.bounds.size.height - 6));
-
-    if (copilot && copilot.superview) {
-        slot =
-            [copilot.superview convertRect:copilot.frame
-                                    toView:toolbar];
-
-        copilot.hidden = YES;
-        copilot.userInteractionEnabled = NO;
-    }
+    if (!toolbar || toolbar.bounds.size.width < 100) return;
 
     UIButton *button =
         (UIButton *)[toolbar viewWithTag:DKAIButtonTag];
 
     if (!button) {
-        button =
-            [UIButton buttonWithType:UIButtonTypeSystem];
-
+        button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.tag = DKAIButtonTag;
 
         [button setTitle:@"AI"
@@ -439,22 +479,23 @@ static void DKInstallAIButton(UIView *toolbar) {
                               weight:UIFontWeightBold];
 
         button.backgroundColor =
-            [UIColor colorWithRed:0.27
-                            green:0.21
-                             blue:0.38
-                            alpha:0.98];
+            [UIColor colorWithRed:0.22
+                            green:0.18
+                             blue:0.29
+                            alpha:1.0];
 
         button.layer.cornerRadius = 10;
+        button.layer.masksToBounds = YES;
         button.accessibilityLabel = @"Deaf AI Fix";
 
         [button addTarget:[DKActionTarget shared]
-                   action:@selector(tap:)
+                   action:@selector(tapAI:)
          forControlEvents:UIControlEventTouchUpInside];
 
         UILongPressGestureRecognizer *hold =
             [[UILongPressGestureRecognizer alloc]
                 initWithTarget:[DKActionTarget shared]
-                        action:@selector(hold:)];
+                        action:@selector(holdAI:)];
 
         hold.minimumPressDuration = 0.55;
         [button addGestureRecognizer:hold];
@@ -462,22 +503,20 @@ static void DKInstallAIButton(UIView *toolbar) {
         [toolbar addSubview:button];
     }
 
-    if (slot.size.width < 30 || slot.size.width > 80) {
-        slot.size.width = 44;
-    }
+    CGFloat height = MIN(32.0, MAX(28.0, toolbar.bounds.size.height - 4.0));
 
-    if (slot.size.height < 26) {
-        slot.size.height = 32;
-    }
+    button.frame =
+        CGRectMake(2.0,
+                   MAX(1.0, (toolbar.bounds.size.height - height) * 0.5),
+                   38.0,
+                   height);
 
-    button.frame = slot;
     [toolbar bringSubviewToFront:button];
 }
 
 static void DKToolbarLayout(id self, SEL _cmd) {
     if (gToolbarLayoutOriginal) {
-        ((void(*)(id,SEL))
-            gToolbarLayoutOriginal)(self, _cmd);
+        ((void(*)(id,SEL))gToolbarLayoutOriginal)(self, _cmd);
     }
 
     if ([self isKindOfClass:[UIView class]]) {
@@ -485,22 +524,40 @@ static void DKToolbarLayout(id self, SEL _cmd) {
     }
 }
 
-static NSMutableSet<NSIndexPath *> *DKHiddenPaths(id controller) {
-    static char key;
+static void DKDrawSpace(id self,
+                        SEL _cmd,
+                        id key,
+                        NSString *imageName,
+                        NSString *enabledLangText,
+                        CGRect frame,
+                        CGContextRef context,
+                        NSString *attribute) {
 
-    NSMutableSet *set =
-        objc_getAssociatedObject(controller, &key);
+    if (!gRendererSpaceOriginal) return;
 
-    if (!set) {
-        set = [NSMutableSet set];
+    ((void(*)(id,SEL,id,NSString*,NSString*,CGRect,CGContextRef,NSString *))
+        gRendererSpaceOriginal)
+        (self,
+         _cmd,
+         key,
+         @"",
+         enabledLangText,
+         frame,
+         context,
+         attribute);
+}
 
-        objc_setAssociatedObject(controller,
-                                 &key,
-                                 set,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static UICollectionView *DKCollectionViewForCell(UIView *cell) {
+    UIView *view = cell.superview;
+
+    while (view) {
+        if ([view isKindOfClass:[UICollectionView class]]) {
+            return (UICollectionView *)view;
+        }
+        view = view.superview;
     }
 
-    return set;
+    return nil;
 }
 
 static BOOL DKBlockedToolCell(UIView *cell) {
@@ -509,150 +566,218 @@ static BOOL DKBlockedToolCell(UIView *cell) {
         @"microsoft rewards",
         @"messages",
         @"messaggi",
-        @"messaging_center"
+        @"messaging centre",
+        @"messaging center"
     ]);
 }
 
-static id DKCell(id self,
-                 SEL _cmd,
-                 UICollectionView *collectionView,
-                 NSIndexPath *indexPath) {
-
-    id cell =
-        ((id(*)(id,SEL,id,id))
-            gCellOriginal)(self,
-                           _cmd,
-                           collectionView,
-                           indexPath);
-
-    if ([cell isKindOfClass:[UIView class]]
-        && DKBlockedToolCell((UIView *)cell)) {
-
-        [DKHiddenPaths(self) addObject:indexPath];
-
-        UIView *view = (UIView *)cell;
-        view.hidden = YES;
-        view.alpha = 0;
-        view.userInteractionEnabled = NO;
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [collectionView.collectionViewLayout invalidateLayout];
-        });
-    }
-
-    return cell;
+static BOOL DKSettingsCell(UIView *cell) {
+    return DKContains(DKText(cell), @[
+        @"impostazioni",
+        @"settings"
+    ]);
 }
 
-static CGSize DKSize(id self,
-                     SEL _cmd,
-                     UICollectionView *collectionView,
-                     UICollectionViewLayout *layout,
-                     NSIndexPath *indexPath) {
+static NSMutableSet<NSIndexPath *> *DKHiddenPathsForDataSource(id dataSource) {
+    static char key;
 
-    if ([DKHiddenPaths(self) containsObject:indexPath]) {
+    NSMutableSet *set =
+        objc_getAssociatedObject(dataSource, &key);
+
+    if (!set) {
+        set = [NSMutableSet set];
+
+        objc_setAssociatedObject(dataSource,
+                                 &key,
+                                 set,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    return set;
+}
+
+static void DKGridCellLayout(id self, SEL _cmd) {
+    if (gGridCellLayoutOriginal) {
+        ((void(*)(id,SEL))gGridCellLayoutOriginal)(self, _cmd);
+    }
+
+    if (![self isKindOfClass:[UIView class]]) return;
+
+    UIView *cell = (UIView *)self;
+
+    if (!DKBlockedToolCell(cell)) {
+        cell.alpha = 1.0;
+        cell.hidden = NO;
+        cell.userInteractionEnabled = YES;
+        return;
+    }
+
+    cell.alpha = 0.0;
+    cell.hidden = YES;
+    cell.userInteractionEnabled = NO;
+    cell.accessibilityElementsHidden = YES;
+
+    UICollectionView *collection = DKCollectionViewForCell(cell);
+    NSIndexPath *path = collection ? [collection indexPathForCell:(id)cell] : nil;
+    id dataSource = collection.dataSource;
+
+    if (path && dataSource) {
+        NSMutableSet *hidden =
+            DKHiddenPathsForDataSource(dataSource);
+
+        if (![hidden containsObject:path]) {
+            [hidden addObject:path];
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [collection.collectionViewLayout invalidateLayout];
+            });
+        }
+    }
+}
+
+static CGSize DKMenuSize(id self,
+                         SEL _cmd,
+                         UICollectionView *collectionView,
+                         UICollectionViewLayout *layout,
+                         NSIndexPath *indexPath) {
+
+    if ([DKHiddenPathsForDataSource(self) containsObject:indexPath]) {
         return CGSizeMake(0.1, 0.1);
     }
 
     return ((CGSize(*)(id,SEL,id,id,id))
-        gSizeOriginal)(self,
-                       _cmd,
-                       collectionView,
-                       layout,
-                       indexPath);
+        gMenuSizeOriginal)(self,
+                           _cmd,
+                           collectionView,
+                           layout,
+                           indexPath);
 }
 
-static BOOL DKMethodIsDirect(Class cls, SEL selector) {
-    unsigned int count = 0;
-    Method *methods =
-        class_copyMethodList(cls, &count);
+static void DKOpenSwiftKeySettings(UIView *cell) {
+    UIInputViewController *controller =
+        DKInputController(cell);
 
-    BOOL found = NO;
-
-    for (unsigned int i = 0; i < count; i++) {
-        if (method_getName(methods[i]) == selector) {
-            found = YES;
-            break;
+    if (!controller.extensionContext) {
+        if (gGridCellTapOriginal) {
+            ((void(*)(id,SEL))gGridCellTapOriginal)(cell, @selector(cellTapped));
         }
+        return;
     }
 
-    free(methods);
-    return found;
+    NSURL *settingsURL =
+        [NSURL URLWithString:@"swiftkey://settings"];
+
+    [controller.extensionContext
+        openURL:settingsURL
+        completionHandler:^(BOOL success) {
+
+        if (success) return;
+
+        NSURL *homeURL =
+            [NSURL URLWithString:@"swiftkey://"];
+
+        [controller.extensionContext
+            openURL:homeURL
+            completionHandler:^(__unused BOOL homeSuccess) {}];
+    }];
 }
 
-static IMP DKHook(Class cls,
-                  SEL selector,
-                  IMP replacement) {
+static void DKGridCellTap(id self, SEL _cmd) {
+    if ([self isKindOfClass:[UIView class]]
+        && DKSettingsCell((UIView *)self)) {
 
-    if (!cls) return NULL;
-
-    Method method =
-        class_getInstanceMethod(cls, selector);
-
-    if (!method) return NULL;
-
-    IMP original =
-        method_getImplementation(method);
-
-    const char *types =
-        method_getTypeEncoding(method);
-
-    if (!DKMethodIsDirect(cls, selector)) {
-        if (class_addMethod(cls,
-                            selector,
-                            replacement,
-                            types)) {
-            return original;
-        }
+        DKOpenSwiftKeySettings((UIView *)self);
+        return;
     }
 
-    method_setImplementation(
-        class_getInstanceMethod(cls, selector),
-        replacement
-    );
-
-    return original;
-}
-
-static Class DKClass(NSArray<NSString *> *names) {
-    for (NSString *name in names) {
-        Class cls = NSClassFromString(name);
-        if (cls) return cls;
+    if (gGridCellTapOriginal) {
+        ((void(*)(id,SEL))gGridCellTapOriginal)(self, _cmd);
     }
-    return Nil;
 }
 
-static void DKInstallHooks(void) {
-    Class toolbar =
-        DKClass(@[
-            @"SKCandidateToolbarView",
-            @"SKKit.SKCandidateToolbarView"
-        ]);
+static void DKTryInstallHooks(void) {
+    Class toolbar = DKFindClassSuffix(@"SKCandidateToolbarView");
 
-    gToolbarLayoutOriginal =
-        DKHook(toolbar,
-               @selector(layoutSubviews),
-               (IMP)DKToolbarLayout);
+    if (toolbar && !gToolbarHooked) {
+        gToolbarLayoutOriginal =
+            DKHook(toolbar,
+                   @selector(layoutSubviews),
+                   (IMP)DKToolbarLayout);
 
-    Class menu =
-        DKClass(@[
-            @"SKToolBarMenuController",
-            @"SKKit.SKToolBarMenuController"
-        ]);
+        gToolbarHooked = (gToolbarLayoutOriginal != NULL);
+    }
 
-    gCellOriginal =
-        DKHook(menu,
-               @selector(collectionView:cellForItemAtIndexPath:),
-               (IMP)DKCell);
+    Class renderer = DKFindClassSuffix(@"SKKeyboardKeyRenderer");
 
-    gSizeOriginal =
-        DKHook(menu,
-               @selector(collectionView:layout:sizeForItemAtIndexPath:),
-               (IMP)DKSize);
+    if (renderer && !gRendererHooked) {
+        SEL selector =
+            NSSelectorFromString(
+                @"drawSpaceKey:withImage:enabledLangText:inFrame:inContext:attribute:");
+
+        gRendererSpaceOriginal =
+            DKHook(renderer,
+                   selector,
+                   (IMP)DKDrawSpace);
+
+        gRendererHooked = (gRendererSpaceOriginal != NULL);
+    }
+
+    Class menu = DKFindClassSuffix(@"SKToolBarMenuController");
+
+    if (menu && !gMenuHooked) {
+        SEL sizeSelector =
+            @selector(collectionView:layout:sizeForItemAtIndexPath:);
+
+        gMenuSizeOriginal =
+            DKHook(menu,
+                   sizeSelector,
+                   (IMP)DKMenuSize);
+
+        gMenuHooked = (gMenuSizeOriginal != NULL);
+    }
+
+    Class gridCell = DKFindClassSuffix(@"SkToolBarMenuGridCVCell");
+
+    if (gridCell && !gGridCellHooked) {
+        gGridCellLayoutOriginal =
+            DKHook(gridCell,
+                   @selector(layoutSubviews),
+                   (IMP)DKGridCellLayout);
+
+        gGridCellTapOriginal =
+            DKHook(gridCell,
+                   NSSelectorFromString(@"cellTapped"),
+                   (IMP)DKGridCellTap);
+
+        gGridCellHooked =
+            (gGridCellLayoutOriginal != NULL
+             && gGridCellTapOriginal != NULL);
+    }
+}
+
+static void DKRetryInstall(NSInteger attempt) {
+    DKTryInstallHooks();
+
+    if (gToolbarHooked
+        && gRendererHooked
+        && gMenuHooked
+        && gGridCellHooked) {
+        return;
+    }
+
+    if (attempt >= 40) return;
+
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW,
+                      (int64_t)(0.25 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            DKRetryInstall(attempt + 1);
+        });
 }
 
 __attribute__((constructor))
 static void DKStart(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        DKInstallHooks();
+        DKRetryInstall(0);
     });
 }
