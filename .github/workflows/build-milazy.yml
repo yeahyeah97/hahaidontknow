@@ -10,6 +10,14 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Report build SDK
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+      - name: Test typing core
+        run: |
+          swiftc Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
+          "$RUNNER_TEMP/TypingCoreTests"
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project

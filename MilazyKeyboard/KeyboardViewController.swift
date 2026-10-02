@@ -3,7 +3,7 @@ import NaturalLanguage
 
 final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     private enum Page { case letters, numbers, symbols, emoji }
-    fileprivate enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
+    enum KeyRole { case normal, shift, delete, mode, emoji, space, returnKey }
 
     private let predictionBar = UIStackView()
     private let aiButton = UIButton(type: .system)
@@ -13,6 +13,10 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private let aiStatusLabel = UILabel()
     private var page: Page = .letters
     private var shifted = true
+    private var capitalization = CapitalizationState()
+    private var knownContext: String?
+    private var knownDocument: UUID?
+    private var lastShiftTap: TimeInterval = 0
     private var predictionButtons: [UIButton] = []
     private var laidOutKeys: [(TouchKey, CGRect)] = []
     private var cachedCorrection: (word: String, replacement: String)?
@@ -55,6 +59,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         keyHaptic.prepare()
         buildChrome()
         rebuildKeys()
+        syncAutoCapitalization()
         updateAppearance()
         requestSupplementaryLexicon { [weak self] lexicon in
             DispatchQueue.main.async {
@@ -86,10 +91,18 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             }
             button.frame = frame.integral
         }
+        keyCanvas.cacheLayout()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        let context = textDocumentProxy.documentContextBeforeInput
+        if knownDocument != textDocumentProxy.documentIdentifier || context != knownContext {
+            capitalization.reset()
+            cachedCorrection = nil
+        }
+        knownDocument = textDocumentProxy.documentIdentifier
+        knownContext = context
         updateReturnKey()
         updateAppearance()
         syncAutoCapitalization()
@@ -99,7 +112,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     private func buildChrome() {
         aiButton.translatesAutoresizingMaskIntoConstraints = false
-        aiButton.setTitle("AI", for: .normal)
+        aiButton.setTitle("Deaf AI", for: .normal)
         aiButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .bold)
         aiButton.layer.cornerRadius = 9
         aiButton.addTarget(self, action: #selector(aiTapped), for: .touchUpInside)
@@ -146,7 +159,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         NSLayoutConstraint.activate([
             aiButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
             aiButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
-            aiButton.widthAnchor.constraint(equalToConstant: 38),
+            aiButton.widthAnchor.constraint(equalToConstant: 58),
             aiButton.heightAnchor.constraint(equalToConstant: 27),
 
             menuButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
@@ -187,6 +200,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             buildEmoji()
         }
         updateReturnKey()
+        syncAutoCapitalization()
         updateAppearance()
         view.setNeedsLayout()
     }
@@ -293,13 +307,11 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             }
             button.onFingerMoved = { [weak self] key, point, original in
                 guard let self else { return }
-                let resolved = self.resolvedNormalKey(at: point, source: key) ?? key
-                let display = self.destinationText(for: resolved, matchingCaseOf: original)
-                self.showPreview(for: resolved, text: display)
+                self.showPreview(for: key, text: original)
             }
             button.onFingerEnded = { [weak self] key, point, original in
                 self?.hidePreview()
-                self?.finalizeOptimisticTouch(from: key, point: point, insertedText: original)
+                // A touch-down character is final. Word correction happens on Space.
             }
             button.onFingerCancelled = { [weak self] in
                 self?.hidePreview()
@@ -314,9 +326,9 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
         if role == .space && page == .letters {
             let badge = UILabel()
-            badge.text = "EN IT"
+            badge.text = "IT EN"
             badge.font = .systemFont(ofSize: 12, weight: .medium)
-            badge.textColor = UIColor.white.withAlphaComponent(0.42)
+            badge.textColor = UIColor.secondaryLabel
             badge.textAlignment = .center
             badge.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(badge)
@@ -328,112 +340,6 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
         keyCanvas.addSubview(button)
         laidOutKeys.append((button, frame))
-    }
-
-    private func destinationText(for key: TouchKey, matchingCaseOf source: String) -> String {
-        guard var value = key.currentTitle ?? key.learningKey else { return source }
-        if source.first?.isUppercase == true {
-            value = value.uppercased()
-        } else if source.first?.isLowercase == true {
-            value = value.lowercased()
-        }
-        return value
-    }
-
-    private func resolvedNormalKey(at point: CGPoint, source: TouchKey? = nil) -> TouchKey? {
-        let keys = laidOutKeys.map { $0.0 }.filter {
-            $0.referenceRole == .normal && !$0.isHidden && $0.alpha > 0.01
-        }
-        guard !keys.isEmpty else { return nil }
-
-        // Group visual rows first so staggered rows do not steal taps too easily.
-        let sorted = keys.sorted { $0.frame.midY < $1.frame.midY }
-        var rows: [[TouchKey]] = []
-        for key in sorted {
-            if let first = rows.last?.first,
-               abs(first.frame.midY - key.frame.midY) < 12 {
-                rows[rows.count - 1].append(key)
-            } else {
-                rows.append([key])
-            }
-        }
-
-        guard let chosenRow = rows.min(by: { lhs, rhs in
-            let ly = lhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(lhs.count)
-            let ry = rhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(rhs.count)
-            let ldist = abs(point.y - ly)
-            let rdist = abs(point.y - ry)
-
-            // Slight vertical stickiness: if the finger is close to the source row,
-            // do not jump rows just because it crossed the mathematical midpoint.
-            if let source {
-                let sourceY = source.frame.midY
-                if abs(point.y - sourceY) < 34 {
-                    if abs(ly - sourceY) < 12 { return true }
-                    if abs(ry - sourceY) < 12 { return false }
-                }
-            }
-
-            return ldist < rdist
-        }) else { return nil }
-
-        return chosenRow.min { lhs, rhs in
-            var lscore = lhs.learningKey.map {
-                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: lhs.frame)
-            } ?? hypot(point.x - lhs.frame.midX, point.y - lhs.frame.midY)
-
-            var rscore = rhs.learningKey.map {
-                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: rhs.frame)
-            } ?? hypot(point.x - rhs.frame.midX, point.y - rhs.frame.midY)
-
-            // Bigger invisible hitbox than the visible cap.
-            // This deliberately overlaps neighboring caps a little.
-            let hitbox = KeyboardPreferences.shared.hitboxMode
-            let lComfort = lhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY)
-            let rComfort = rhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY)
-            if lComfort.contains(point) { lscore -= hitbox.comfortBonus }
-            if rComfort.contains(point) { rscore -= hitbox.comfortBonus }
-
-            // Hysteresis: while sliding, the source key keeps a small advantage
-            // until the finger has clearly entered a neighbor's zone.
-            if let source {
-                if lhs === source { lscore -= 34 }
-                if rhs === source { rscore -= 34 }
-            }
-
-            return lscore < rscore
-        }
-    }
-
-    private func finalizeOptimisticTouch(from source: TouchKey, point: CGPoint, insertedText: String) {
-        guard source.referenceRole == .normal,
-              let destination = resolvedNormalKey(at: point, source: source),
-              destination !== source else {
-            return
-        }
-
-        let replacement = destinationText(for: destination, matchingCaseOf: insertedText)
-        guard replacement != insertedText else { return }
-
-        let sourceCenter = CGPoint(x: source.frame.midX, y: source.frame.midY)
-        let destinationCenter = CGPoint(x: destination.frame.midX, y: destination.frame.midY)
-        let sourceDistance = hypot(point.x - sourceCenter.x, point.y - sourceCenter.y)
-        let destinationDistance = hypot(point.x - destinationCenter.x, point.y - destinationCenter.y)
-
-        // Do not flip a character on tiny release jitter. The destination has to be
-        // meaningfully closer than the source, which feels much more like iOS/Gboard.
-        guard destinationDistance + 4.0 < sourceDistance else { return }
-
-        // The original key was already inserted on touch-down for minimum latency.
-        // Correct only the last character if the finger clearly finishes on another cap.
-        textDocumentProxy.deleteBackward()
-        textDocumentProxy.insertText(replacement)
-
-        if let key = destination.learningKey {
-            TouchLearningModel.shared.record(key: key, point: point, frame: destination.frame)
-        }
-
-        schedulePredictionRefresh()
     }
 
     private func showPreview(for key: TouchKey, text: String) {
@@ -521,35 +427,37 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     private func playKeyFeedback() {
-        let prefs = KeyboardPreferences.shared
-        if prefs.sound { UIDevice.current.playInputClick() }
-        if prefs.haptics {
-            keyHaptic.impactOccurred(intensity: 0.28)
-            keyHaptic.prepare()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let prefs = KeyboardPreferences.shared
+            if prefs.sound { UIDevice.current.playInputClick() }
+            if prefs.haptics {
+                self.keyHaptic.impactOccurred(intensity: 0.28)
+                self.keyHaptic.prepare()
+            }
         }
     }
 
     private func syncAutoCapitalization() {
         guard page == .letters else { return }
-        if textDocumentProxy.autocapitalizationType == UITextAutocapitalizationType.none {
-            if shifted {
-                shifted = false
-                refreshLetterCaps()
-            }
-            return
+        let mode: CapitalizationState.Mode
+        switch textDocumentProxy.autocapitalizationType {
+        case .none: mode = .none
+        case .words: mode = .words
+        case .allCharacters: mode = .allCharacters
+        default: mode = .sentences
         }
+        shifted = capitalization.uppercase(
+            context: textDocumentProxy.documentContextBeforeInput, mode: mode, current: shifted
+        )
+        refreshLetterCaps()
+    }
 
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        let shouldShift = context.isEmpty
-            || context.hasSuffix("\n")
-            || context.hasSuffix(". ")
-            || context.hasSuffix("! ")
-            || context.hasSuffix("? ")
-
-        if shifted != shouldShift {
-            shifted = shouldShift
-            refreshLetterCaps()
-        }
+    private func didInsertText() {
+        knownDocument = textDocumentProxy.documentIdentifier
+        knownContext = textDocumentProxy.documentContextBeforeInput
+        syncAutoCapitalization()
+        schedulePredictionRefresh()
     }
 
     private func bestImmediateCorrection(for source: String, context: String) -> String? {
@@ -595,28 +503,19 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     @objc private func characterKey(_ sender: UIButton) {
-        let key = sender as? TouchKey
-        var value = key?.learningKey ?? sender.currentTitle ?? ""
-        guard !value.isEmpty else { return }
-
-        if page == .letters {
-            value = shifted ? value.uppercased() : value.lowercased()
-        }
-
+        // The displayed title is the single source of truth for insertion.
+        guard let value = sender.currentTitle, !value.isEmpty else { return }
         textDocumentProxy.insertText(value)
+        if page == .letters { capitalization.consumedLetter() }
+        didInsertText()
         playKeyFeedback()
-
-        if page == .letters && shifted {
-            shifted = false
-            DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
-        }
-        schedulePredictionRefresh()
     }
 
     @objc private func backspaceDown() {
         textDocumentProxy.deleteBackward()
+        capitalization.reset()
+        didInsertText()
         playKeyFeedback()
-        schedulePredictionRefresh()
     }
 
     @objc private func backspaceHold(_ gesture: UILongPressGestureRecognizer) {
@@ -650,9 +549,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             textDocumentProxy.insertText(". ")
             playKeyFeedback()
             lastSpaceTap = 0
-            shifted = true
-            DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
-            schedulePredictionRefresh()
+            capitalization.reset()
+            didInsertText()
             return
         }
 
@@ -686,12 +584,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         textDocumentProxy.insertText(" ")
         playKeyFeedback()
         lastSpaceTap = now
-        shifted = false
-        DispatchQueue.main.async { [weak self] in
-            self?.syncAutoCapitalization()
-            self?.refreshLetterCaps()
-        }
-        schedulePredictionRefresh()
+        capitalization.reset()
+        didInsertText()
     }
 
     @objc private func returnDown() {
@@ -705,15 +599,16 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         }
         textDocumentProxy.insertText("\n")
         playKeyFeedback()
-        shifted = true
-        DispatchQueue.main.async { [weak self] in self?.refreshLetterCaps() }
-        schedulePredictionRefresh()
+        capitalization.reset()
+        didInsertText()
     }
 
     @objc private func toggleShift() {
-        shifted.toggle()
+        let now = Date.timeIntervalSinceReferenceDate
+        capitalization.toggle(currentlyUppercase: shifted, lock: now - lastShiftTap < 0.32)
+        lastShiftTap = now
+        syncAutoCapitalization()
         playKeyFeedback()
-        refreshLetterCaps()
     }
 
     private func refreshLetterCaps() {
@@ -1410,167 +1305,6 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             view.subviews.forEach(visit)
         }
         visit(aiPanel)
-    }
-}
-
-final class TouchKey: UIButton {
-    fileprivate var referenceRole: KeyboardViewController.KeyRole = .normal
-    fileprivate var learningKey: String?
-    fileprivate var onFingerBegan: ((TouchKey, String) -> Void)?
-    fileprivate var onFingerMoved: ((TouchKey, CGPoint, String) -> Void)?
-    fileprivate var onFingerEnded: ((TouchKey, CGPoint, String) -> Void)?
-    fileprivate var onFingerCancelled: (() -> Void)?
-    private var touchStartText: String = ""
-
-    override var isHighlighted: Bool {
-        didSet {
-            if isHighlighted {
-                transform = CGAffineTransform(scaleX: 0.99, y: 0.99)
-                alpha = 0.86
-            } else {
-                UIView.animate(withDuration: 0.045, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-                    self.transform = .identity
-                    self.alpha = 1
-                }
-            }
-        }
-    }
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        touchStartText = currentTitle ?? learningKey ?? ""
-
-        if let key = learningKey,
-           let touch = touches.first,
-           let container = superview {
-            let point = touch.location(in: container)
-            let hitbox = KeyboardPreferences.shared.hitboxMode
-            if frame.insetBy(dx: -max(14, hitbox.expansionX), dy: -max(9, hitbox.expansionY)).contains(point) {
-                TouchLearningModel.shared.record(key: key, point: point, frame: frame)
-            }
-        }
-
-        onFingerBegan?(self, touchStartText)
-        super.touchesBegan(touches, with: event)
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let touch = touches.first, let container = superview {
-            onFingerMoved?(self, touch.location(in: container), touchStartText)
-        }
-        super.touchesMoved(touches, with: event)
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let touch = touches.first, let container = superview {
-            onFingerEnded?(self, touch.location(in: container), touchStartText)
-        } else {
-            onFingerCancelled?()
-        }
-        super.touchesEnded(touches, with: event)
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        onFingerCancelled?()
-        super.touchesCancelled(touches, with: event)
-    }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.contains(point)
-    }
-}
-
-final class KeyPreviewView: UIView {
-    private let label = UILabel()
-
-    var text: String {
-        get { label.text ?? "" }
-        set { label.text = newValue }
-    }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        backgroundColor = UIColor(white: 0.34, alpha: 1)
-        layer.cornerRadius = 10
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.22
-        layer.shadowRadius = 3
-        layer.shadowOffset = CGSize(width: 0, height: 1)
-
-        label.font = .systemFont(ofSize: 28, weight: .regular)
-        label.textColor = .white
-        label.textAlignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
-            label.heightAnchor.constraint(equalToConstant: 35)
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-final class KeyCanvasView: UIView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard !isHidden, alpha > 0.01, isUserInteractionEnabled, bounds.contains(point) else {
-            return nil
-        }
-
-        let keys = subviews.compactMap { $0 as? TouchKey }.filter {
-            !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled
-        }
-        guard !keys.isEmpty else {
-            return super.hitTest(point, with: event)
-        }
-
-        let sorted = keys.sorted { $0.frame.midY < $1.frame.midY }
-        var rows: [[TouchKey]] = []
-
-        for key in sorted {
-            if let anchor = rows.last?.first,
-               abs(anchor.frame.midY - key.frame.midY) < 12 {
-                rows[rows.count - 1].append(key)
-            } else {
-                rows.append([key])
-            }
-        }
-
-        guard let row = rows.min(by: { lhs, rhs in
-            let ly = lhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(lhs.count)
-            let ry = rhs.map { $0.frame.midY }.reduce(0,+) / CGFloat(rhs.count)
-            return abs(point.y - ly) < abs(point.y - ry)
-        }) else {
-            return super.hitTest(point, with: event)
-        }
-
-        // Bigger invisible target than the cap itself. Instead of hard-locking a tap
-        // merely because it landed one or two pixels inside a neighboring cap, score
-        // all keys in the selected row and favor the user's learned landing center.
-        return row.min { lhs, rhs in
-            var lscore = lhs.learningKey.map {
-                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: lhs.frame)
-            } ?? hypot(point.x - lhs.frame.midX, point.y - lhs.frame.midY)
-
-            var rscore = rhs.learningKey.map {
-                TouchLearningModel.shared.probabilityScore(for: $0, point: point, frame: rhs.frame)
-            } ?? hypot(point.x - rhs.frame.midX, point.y - rhs.frame.midY)
-
-            let hitbox = KeyboardPreferences.shared.hitboxMode
-            if lhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY).contains(point) {
-                lscore -= hitbox.comfortBonus
-            }
-            if rhs.frame.insetBy(dx: -hitbox.expansionX, dy: -hitbox.expansionY).contains(point) {
-                rscore -= hitbox.comfortBonus
-            }
-
-            return lscore < rscore
-        }
     }
 }
 

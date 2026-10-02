@@ -1,4 +1,4 @@
-import UIKit
+import Foundation
 
 final class TouchLearningModel {
     static let shared = TouchLearningModel()
@@ -6,118 +6,100 @@ final class TouchLearningModel {
     private struct Gaussian: Codable {
         var meanX: Double = 0
         var meanY: Double = 0
-        var varX: Double = 0.045
-        var varY: Double = 0.055
+        var varX: Double = 0.055
+        var varY: Double = 0.075
         var count: Int = 0
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let storageKey = "milazy.touchGaussian.v2"
-    private var models: [String: Gaussian]
+    private let queue = DispatchQueue(label: "milazy.touch.learning", qos: .utility)
     private let lock = NSLock()
+    private var models: [String: Gaussian]
+    private var pendingSave: DispatchWorkItem?
 
-    private init() {
-        if let data = defaults.data(forKey: storageKey),
-           let decoded = try? JSONDecoder().decode([String: Gaussian].self, from: data) {
-            models = decoded
-        } else {
-            models = [:]
-        }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        models = defaults.data(forKey: storageKey).flatMap {
+            try? JSONDecoder().decode([String: Gaussian].self, from: $0)
+        } ?? [:]
     }
 
+    // Only confirmed central touch-down samples train the model. Release jitter and
+    // inferred neighboring keys cannot reinforce their own mistakes.
     func record(key: String, point: CGPoint, frame: CGRect) {
-        guard frame.width > 1, frame.height > 1, !key.isEmpty else { return }
-
-        let nx = max(-0.80, min(0.80, Double((point.x - frame.midX) / frame.width)))
-        let ny = max(-0.80, min(0.80, Double((point.y - frame.midY) / frame.height)))
-
-        lock.lock()
-        var model = models[key] ?? Gaussian()
-
-        let alpha: Double
-        if model.count < 24 {
-            alpha = 1.0 / Double(model.count + 1)
-        } else {
-            alpha = 0.025
+        guard frame.width > 1, frame.height > 1, !key.isEmpty,
+              frame.insetBy(dx: frame.width * 0.12, dy: frame.height * 0.08).contains(point)
+        else { return }
+        let nx = Double((point.x - frame.midX) / frame.width)
+        let ny = Double((point.y - frame.midY) / frame.height)
+        queue.async {
+            self.lock.lock()
+            var model = self.models[key] ?? Gaussian()
+            let alpha = model.count < 24 ? 1 / Double(model.count + 8) : 0.025
+            let dx = nx - model.meanX
+            let dy = ny - model.meanY
+            model.meanX = max(-0.22, min(0.22, model.meanX + dx * alpha))
+            model.meanY = max(-0.22, min(0.22, model.meanY + dy * alpha))
+            model.varX = min(0.18, max(0.035, model.varX + (dx * dx - model.varX) * alpha))
+            model.varY = min(0.22, max(0.045, model.varY + (dy * dy - model.varY) * alpha))
+            model.count = min(model.count + 1, 2500)
+            self.models[key] = model
+            self.lock.unlock()
+            self.scheduleSave()
         }
-
-        let oldMeanX = model.meanX
-        let oldMeanY = model.meanY
-
-        model.meanX += (nx - model.meanX) * alpha
-        model.meanY += (ny - model.meanY) * alpha
-
-        let dx = nx - oldMeanX
-        let dy = ny - oldMeanY
-        model.varX += ((dx * dx) - model.varX) * alpha
-        model.varY += ((dy * dy) - model.varY) * alpha
-
-        // Keep the model forgiving. We want adaptation, not overfitting.
-        model.varX = min(max(model.varX, 0.018), 0.18)
-        model.varY = min(max(model.varY, 0.022), 0.22)
-        model.count = min(model.count + 1, 2500)
-
-        models[key] = model
-        let snapshot = models
-        let count = model.count
-        lock.unlock()
-
-        if count <= 24 || count % 16 == 0 {
-            if let data = try? JSONEncoder().encode(snapshot) {
-                defaults.set(data, forKey: storageKey)
-            }
-        }
-    }
-
-    func adjustedCenter(for key: String, frame: CGRect) -> CGPoint {
-        lock.lock()
-        let model = models[key]
-        lock.unlock()
-
-        guard let model, model.count >= 4 else {
-            return CGPoint(x: frame.midX, y: frame.midY)
-        }
-
-        let strength = min(0.82, 0.42 + Double(model.count) / 850.0)
-        return CGPoint(
-            x: frame.midX + CGFloat(model.meanX * strength) * frame.width,
-            y: frame.midY + CGFloat(model.meanY * strength) * frame.height
-        )
     }
 
     func probabilityScore(for key: String, point: CGPoint, frame: CGRect) -> CGFloat {
         let nx = Double((point.x - frame.midX) / max(frame.width, 1))
         let ny = Double((point.y - frame.midY) / max(frame.height, 1))
-
         lock.lock()
-        let model = models[key]
+        let model = models[key] ?? Gaussian()
         lock.unlock()
+        let reliability = min(1, Double(model.count) / 70)
+        let dx = nx - model.meanX * reliability
+        let dy = ny - model.meanY * reliability
+        let vx = model.varX * reliability + 0.055 * (1 - reliability)
+        let vy = model.varY * reliability + 0.075 * (1 - reliability)
+        return CGFloat(dx * dx / vx + dy * dy / vy + 0.14 * log(vx * vy))
+    }
 
-        guard let model, model.count >= 6 else {
-            let dx = nx
-            let dy = ny
-            return CGFloat(dx * dx / 0.055 + dy * dy / 0.075)
+    private func scheduleSave() {
+        guard pendingSave == nil else { return }
+        let item = DispatchWorkItem {
+            self.lock.lock()
+            let snapshot = self.models
+            self.lock.unlock()
+            if let data = try? JSONEncoder().encode(snapshot) {
+                self.defaults.set(data, forKey: self.storageKey)
+            }
+            self.pendingSave = nil
         }
-
-        let reliability = min(1.0, Double(model.count) / 70.0)
-        let meanX = model.meanX * reliability
-        let meanY = model.meanY * reliability
-        let vx = model.varX + (1.0 - reliability) * 0.030
-        let vy = model.varY + (1.0 - reliability) * 0.040
-
-        let dx = nx - meanX
-        let dy = ny - meanY
-
-        // Negative-log-likelihood-like score. Lower is a better match.
-        let mahalanobis = (dx * dx / vx) + (dy * dy / vy)
-        let spreadPenalty = 0.14 * log(vx * vy)
-        return CGFloat(mahalanobis + spreadPenalty)
+        pendingSave = item
+        queue.asyncAfter(deadline: .now() + 0.5, execute: item)
     }
 
     func reset() {
-        lock.lock()
-        models.removeAll()
-        lock.unlock()
-        defaults.removeObject(forKey: storageKey)
+        queue.async {
+            self.pendingSave?.cancel()
+            self.pendingSave = nil
+            self.lock.lock()
+            self.models.removeAll()
+            self.lock.unlock()
+            self.defaults.removeObject(forKey: self.storageKey)
+        }
+    }
+
+    func flush() {
+        queue.sync {
+            self.pendingSave?.cancel()
+            self.pendingSave = nil
+            self.lock.lock()
+            let snapshot = self.models
+            self.lock.unlock()
+            if let data = try? JSONEncoder().encode(snapshot) {
+                self.defaults.set(data, forKey: self.storageKey)
+            }
+        }
     }
 }
