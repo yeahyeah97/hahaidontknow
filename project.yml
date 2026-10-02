@@ -51,6 +51,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.typingtests
+        INFOPLIST_FILE: Tests/TypingTestInfo.plist
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
     dependencies:
@@ -70,6 +71,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milazy.touchharness
+        INFOPLIST_FILE: MilazyApp/Info.plist
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
   MilazyTouchUITests:
