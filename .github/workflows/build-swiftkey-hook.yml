@@ -21,7 +21,7 @@ jobs:
           clang -fobjc-arc -dynamiclib -arch arm64 \
             -isysroot "$SDK" \
             -miphoneos-version-min=16.0 \
-            -framework UIKit -framework Foundation -framework Security \
+            -framework UIKit -framework Foundation -framework Security -framework CoreGraphics \
             -install_name "@rpath/DeafKeyHook.dylib" \
             SwiftKeyPatch/DeafKeyHook.m \
             -o DeafKeyHook.dylib
