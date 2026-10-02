@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: milazy-main-build
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-15
@@ -16,7 +20,7 @@ jobs:
           xcodebuild -showsdks
       - name: Test typing core
         run: |
-          swiftc Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
+          swiftc -O Shared/KeyboardPreferences.swift Shared/LocalLanguageModel.swift Shared/BilingualLanguageState.swift Shared/CorrectionIndex.swift Shared/TextContext.swift Shared/CapitalizationState.swift Shared/TouchLearningModel.swift Shared/TouchResolver.swift Tests/TypingCoreTests.swift -o "$RUNNER_TEMP/TypingCoreTests"
           "$RUNNER_TEMP/TypingCoreTests"
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -57,3 +61,5 @@ jobs:
           name: MilazyKeyboard_V3_1_0_unsigned
           path: MilazyKeyboard_V3_1_0_unsigned.ipa
           if-no-files-found: error
+
+

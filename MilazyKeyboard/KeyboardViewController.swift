@@ -1,5 +1,4 @@
 import UIKit
-import NaturalLanguage
 
 final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedback {
     private enum Page { case letters, numbers, symbols, emoji }
@@ -19,9 +18,12 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private var lastShiftTap: TimeInterval = 0
     private var predictionButtons: [UIButton] = []
     private var laidOutKeys: [(TouchKey, CGRect)] = []
-    private var cachedCorrection: (word: String, replacement: String)?
+    private let predictionEngine = PredictionEngine()
+    private var predictionResult: PredictionEngine.Result?
+    private var predictionContext: String?
+    private var undoCorrection: (source: String, replacement: String, context: String, document: UUID)?
+    private var spaceBadge: UILabel?
     private var predictionGeneration = 0
-    private var supplementaryEntries: [UILexiconEntry] = []
     private var backspaceTimer: Timer?
     private var lastSpaceTap: TimeInterval = 0
     private let keyHaptic = UIImpactFeedbackGenerator(style: .light)
@@ -55,6 +57,9 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     override func viewDidLoad() {
         super.viewDidLoad()
         preferredContentSize = CGSize(width: 0, height: 248)
+        let height = view.heightAnchor.constraint(equalToConstant: 248)
+        height.priority = .defaultHigh
+        height.isActive = true
         view.clipsToBounds = false
         keyHaptic.prepare()
         buildChrome()
@@ -63,8 +68,12 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         updateAppearance()
         requestSupplementaryLexicon { [weak self] lexicon in
             DispatchQueue.main.async {
-                self?.supplementaryEntries = lexicon.entries
-                self?.refreshPredictions()
+                guard let self else { return }
+                self.predictionEngine.installLexicon(
+                    lexicon.entries.map { ($0.userInput, $0.documentText) },
+                    mode: KeyboardPreferences.shared.languageMode
+                )
+                self.refreshPredictions()
             }
         }
         refreshPredictions()
@@ -74,13 +83,14 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         super.viewDidLayoutSubviews()
         let referenceWidth: CGFloat = 440
         let sx = keyCanvas.bounds.width / referenceWidth
+        let sy = min(1, max(0, keyCanvas.bounds.height / 213))
         let layout = KeyboardPreferences.shared.layoutMode
         for (button, reference) in laidOutKeys {
             var frame = CGRect(
                 x: reference.minX * sx,
-                y: reference.minY,
+                y: reference.minY * sy,
                 width: reference.width * sx,
-                height: reference.height
+                height: reference.height * sy
             )
             if button.referenceRole == .normal {
                 switch layout {
@@ -99,7 +109,8 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         let context = textDocumentProxy.documentContextBeforeInput
         if knownDocument != textDocumentProxy.documentIdentifier || context != knownContext {
             capitalization.reset()
-            cachedCorrection = nil
+            predictionResult = nil
+            undoCorrection = nil
         }
         knownDocument = textDocumentProxy.documentIdentifier
         knownContext = context
@@ -175,8 +186,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             keyCanvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyCanvas.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             keyCanvas.topAnchor.constraint(equalTo: predictionBar.bottomAnchor),
-            keyCanvas.heightAnchor.constraint(equalToConstant: 213),
-            keyCanvas.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
+            keyCanvas.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             aiPanel.leadingAnchor.constraint(equalTo: keyCanvas.leadingAnchor),
             aiPanel.trailingAnchor.constraint(equalTo: keyCanvas.trailingAnchor),
@@ -188,6 +198,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     private func rebuildKeys() {
         keyCanvas.subviews.forEach { $0.removeFromSuperview() }
         laidOutKeys.removeAll()
+        spaceBadge = nil
 
         switch page {
         case .letters:
@@ -332,6 +343,7 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             badge.textAlignment = .center
             badge.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(badge)
+            spaceBadge = badge
             NSLayoutConstraint.activate([
                 badge.centerXAnchor.constraint(equalTo: button.centerXAnchor),
                 badge.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: -1)
@@ -460,39 +472,22 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         schedulePredictionRefresh()
     }
 
-    private func bestImmediateCorrection(for source: String, context: String) -> String? {
-        guard source.count >= 2,
-              LocalLanguageModel.shared.frequency(of: source) <= 2 else { return nil }
-
-        if let learned = LocalLanguageModel.shared.learnedCorrections(for: source, limit: 1).first?.0 {
-            return matchCase(learned, source: source)
+    private var allowsAutocorrection: Bool {
+        guard textDocumentProxy.autocorrectionType != .no else { return false }
+        switch textDocumentProxy.keyboardType {
+        case .URL, .emailAddress, .numberPad, .decimalPad, .phonePad, .asciiCapableNumberPad:
+            return false
+        default: return true
         }
+    }
 
-        let primary = preferredLanguage(for: context)
-        let secondary = primary == "it_IT" ? "en_US" : "it_IT"
-        let checker = UITextChecker()
-        let ns = source as NSString
-        let range = NSRange(location: 0, length: ns.length)
-
-        func firstGuess(_ language: String) -> String? {
-            let misspelled = checker.rangeOfMisspelledWord(
-                in: source,
-                range: range,
-                startingAt: 0,
-                wrap: false,
-                language: language
-            )
-            guard misspelled.location != NSNotFound else { return nil }
-            return checker.guesses(forWordRange: misspelled, in: source, language: language)?.first
-        }
-
-        if let value = firstGuess(primary) {
-            return matchCase(value, source: source)
-        }
-        if let value = firstGuess(secondary) {
-            return matchCase(value, source: source)
-        }
-        return nil
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        backspaceTimer?.invalidate()
+        backspaceTimer = nil
+        predictionEngine.cancel()
+        predictionEngine.flushLearning()
+        hidePreview()
     }
 
     private func canInsertDoubleSpacePeriod(in context: String) -> Bool {
@@ -506,13 +501,23 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         // The displayed title is the single source of truth for insertion.
         guard let value = sender.currentTitle, !value.isEmpty else { return }
         textDocumentProxy.insertText(value)
+        undoCorrection = nil
+        lastSpaceTap = 0
         if page == .letters { capitalization.consumedLetter() }
         didInsertText()
         playKeyFeedback()
     }
 
     @objc private func backspaceDown() {
-        textDocumentProxy.deleteBackward()
+        if let undo = undoCorrection,
+           undo.document == textDocumentProxy.documentIdentifier,
+           undo.context == textDocumentProxy.documentContextBeforeInput {
+            for _ in undo.replacement + " " { textDocumentProxy.deleteBackward() }
+            textDocumentProxy.insertText(undo.source)
+            predictionEngine.learn(word: undo.source, previous: nil,
+                mode: KeyboardPreferences.shared.languageMode, rejectedCorrection: true)
+        } else { textDocumentProxy.deleteBackward() }
+        undoCorrection = nil
         capitalization.reset()
         didInsertText()
         playKeyFeedback()
@@ -524,11 +529,12 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
             backspaceTimer?.invalidate()
             textDocumentProxy.deleteBackward()
             playKeyFeedback()
-            schedulePredictionRefresh()
+            didInsertText()
 
             backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.075, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.textDocumentProxy.deleteBackward()
+                self.didInsertText()
                 self.playKeyFeedback()
             }
         case .ended, .cancelled, .failed:
@@ -543,64 +549,59 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     @objc private func spaceDown() {
         let now = Date.timeIntervalSinceReferenceDate
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
-
+        let mode = KeyboardPreferences.shared.languageMode
+        undoCorrection = nil
         if now - lastSpaceTap < 0.48, canInsertDoubleSpacePeriod(in: context) {
             textDocumentProxy.deleteBackward()
             textDocumentProxy.insertText(". ")
-            playKeyFeedback()
             lastSpaceTap = 0
             capitalization.reset()
             didInsertText()
+            playKeyFeedback()
             return
         }
 
-        let previous = previousWord(in: context)
-        var committed = currentWord()
-
-        if let current = committed {
-            let cached = cachedCorrection.flatMap { correction -> String? in
-                guard correction.word.caseInsensitiveCompare(current) == .orderedSame,
-                      correction.replacement.caseInsensitiveCompare(current) != .orderedSame else { return nil }
-                return correction.replacement
-            }
-            let replacement = cached ?? bestImmediateCorrection(for: current, context: context)
-
-            if let replacement,
-               replacement.caseInsensitiveCompare(current) != .orderedSame {
+        let previous = TextContext.previousWord(in: context)
+        let source = TextContext.currentWord(in: context)
+        var committed = source
+        var applied: String?
+        if allowsAutocorrection, let source {
+            let cached = predictionResult.flatMap { $0.context == context ? $0.correction : nil }
+            let replacement = cached ?? predictionEngine.localCorrection(
+                for: source, previous: previous, mode: mode
+            )
+            if let replacement, replacement.lowercased() != source.lowercased() {
                 replaceCurrentWord(with: replacement)
-                LocalLanguageModel.shared.learnCorrection(from: current, to: replacement)
                 committed = replacement
+                applied = replacement
             }
         }
-
-        if let committed {
-            LocalLanguageModel.shared.learn(word: committed, previous: previous)
-            if LocalLanguageModel.shared.frequency(of: committed) >= 2,
-               !UITextChecker.hasLearnedWord(committed) {
-                UITextChecker.learnWord(committed)
-            }
-        }
-
         textDocumentProxy.insertText(" ")
-        playKeyFeedback()
         lastSpaceTap = now
         capitalization.reset()
         didInsertText()
+        if let source, let applied, let after = textDocumentProxy.documentContextBeforeInput {
+            undoCorrection = (source, applied, after, textDocumentProxy.documentIdentifier)
+        }
+        if let committed {
+            // Automatically applied guesses never teach source -> replacement mappings.
+            predictionEngine.learn(word: committed, previous: previous, mode: mode)
+        }
+        playKeyFeedback()
     }
 
     @objc private func returnDown() {
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        if let current = currentWord() {
-            LocalLanguageModel.shared.learn(word: current, previous: previousWord(in: context))
-            if LocalLanguageModel.shared.frequency(of: current) >= 2,
-               !UITextChecker.hasLearnedWord(current) {
-                UITextChecker.learnWord(current)
-            }
-        }
+        let word = TextContext.currentWord(in: context)
         textDocumentProxy.insertText("\n")
-        playKeyFeedback()
+        undoCorrection = nil
         capitalization.reset()
         didInsertText()
+        if let word {
+            predictionEngine.learn(word: word, previous: TextContext.previousWord(in: context),
+                                   mode: KeyboardPreferences.shared.languageMode)
+        }
+        playKeyFeedback()
     }
 
     @objc private func toggleShift() {
@@ -648,218 +649,46 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
 
     private func schedulePredictionRefresh() {
         predictionGeneration += 1
+        predictionResult = nil
+        predictionContext = nil
+        setPredictions(["", "", ""])
+        predictionEngine.cancel()
         let generation = predictionGeneration
-        DispatchQueue.main.async { [weak self] in
-            guard self?.predictionGeneration == generation else { return }
-            self?.refreshPredictions()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            guard let self, self.predictionGeneration == generation else { return }
+            self.refreshPredictions()
         }
     }
 
     private func currentWord() -> String? {
-        guard let context = textDocumentProxy.documentContextBeforeInput, !context.isEmpty else { return nil }
-        let separators = CharacterSet.letters.union(.decimalDigits).inverted
-        return context.components(separatedBy: separators).last.flatMap { $0.isEmpty ? nil : $0 }
+        textDocumentProxy.documentContextBeforeInput.flatMap { TextContext.currentWord(in: $0) }
     }
 
-    private func words(in text: String) -> [String] {
-        let separators = CharacterSet.letters.union(.decimalDigits).inverted
-        return text.components(separatedBy: separators).filter { !$0.isEmpty }
-    }
-
-    private func previousWord(in context: String) -> String? {
-        let found = words(in: context)
-        guard !found.isEmpty else { return nil }
-        if let current = currentWord(),
-           found.last?.caseInsensitiveCompare(current) == .orderedSame,
-           found.count >= 2 {
-            return found[found.count - 2]
-        }
-        return found.last
-    }
-
-    private func matchCase(_ suggestion: String, source: String) -> String {
-        guard let first = source.first, first.isUppercase else { return suggestion }
-        return suggestion.prefix(1).uppercased() + suggestion.dropFirst()
-    }
+    private func words(in text: String) -> [String] { TextContext.words(in: text) }
 
     private func refreshPredictions() {
-        guard page == .letters else {
+        predictionGeneration += 1
+        predictionResult = nil
+        predictionContext = nil
+        predictionEngine.cancel()
+        guard page == .letters, let context = textDocumentProxy.documentContextBeforeInput else {
             setPredictions(["", "", ""])
-            cachedCorrection = nil
             return
         }
-
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        let previous = previousWord(in: context)
-        let primaryLanguage = preferredLanguage(for: context)
-        let secondaryLanguage = primaryLanguage == "it_IT" ? "en_US" : "it_IT"
-
-        guard let word = currentWord(), !word.isEmpty else {
-            let learned = LocalLanguageModel.shared.nextWords(after: previous, limit: 3)
-            let fallback = primaryLanguage == "it_IT"
-                ? ["Ciao", "Non", "Io"]
-                : ["I", "The", "You"]
-            var values = learned
-            for item in fallback where !values.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
-                values.append(item)
-                if values.count == 3 { break }
-            }
-            while values.count < 3 { values.append("") }
-            setPredictions(Array(values.prefix(3)))
-            cachedCorrection = nil
-            return
-        }
-
         let generation = predictionGeneration
-        let sourceWord = word
-        let learned = LocalLanguageModel.shared.completions(prefix: sourceWord, previous: previous, limit: 8)
-        let sourceLower = sourceWord.lowercased()
-        let lexiconCandidates = supplementaryEntries.compactMap { entry -> String? in
-            let input = entry.userInput
-            let output = entry.documentText
-            if input.lowercased() == sourceLower { return output }
-            if input.lowercased().hasPrefix(sourceLower) { return input }
-            if output.lowercased().hasPrefix(sourceLower) { return output }
-            return nil
+        let document = textDocumentProxy.documentIdentifier
+        let mode = KeyboardPreferences.shared.languageMode
+        predictionEngine.request(context: context, document: document, mode: mode) { [weak self] result in
+            guard let self, self.predictionGeneration == generation,
+                  self.page == .letters, self.textDocumentProxy.documentIdentifier == document,
+                  self.textDocumentProxy.documentContextBeforeInput == result.context,
+                  KeyboardPreferences.shared.languageMode == mode else { return }
+            self.predictionResult = result
+            self.predictionContext = result.context
+            self.setPredictions(result.choices)
+            self.spaceBadge?.text = mode == .automatic ? "IT EN" :
+                (mode == .italian ? "IT" : "EN")
         }
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let checker = UITextChecker()
-            let ns = sourceWord as NSString
-            let range = NSRange(location: 0, length: ns.length)
-
-            func languageCandidates(_ language: String) -> (String?, [String], [String]) {
-                let misspelled = checker.rangeOfMisspelledWord(
-                    in: sourceWord,
-                    range: range,
-                    startingAt: 0,
-                    wrap: false,
-                    language: language
-                )
-                let guesses = misspelled.location != NSNotFound
-                    ? (checker.guesses(forWordRange: misspelled, in: sourceWord, language: language) ?? [])
-                    : []
-                let completions = checker.completions(
-                    forPartialWordRange: range,
-                    in: sourceWord,
-                    language: language
-                ) ?? []
-                return (guesses.first, guesses, completions)
-            }
-
-            let primary = languageCandidates(primaryLanguage)
-            let secondary = languageCandidates(secondaryLanguage)
-
-            var scores: [String: Int] = [:]
-            var display: [String: String] = [:]
-
-            func add(_ value: String, score: Int) {
-                guard !value.isEmpty else { return }
-                let key = value.lowercased()
-                scores[key] = max(scores[key, default: Int.min], score)
-                display[key] = self?.matchCase(value, source: sourceWord) ?? value
-            }
-
-            // Personal vocabulary is strongest: if you use a word often, Milazy keeps it.
-            for (index, value) in learned.enumerated() {
-                add(value, score: 1500 - index * 30 + LocalLanguageModel.shared.frequency(of: value) * 10)
-            }
-
-            for (index, value) in lexiconCandidates.prefix(8).enumerated() {
-                add(value, score: 1325 - index * 20)
-            }
-
-            for (value, count) in LocalLanguageModel.shared.learnedCorrections(for: sourceWord, limit: 5) {
-                add(value, score: 1700 + count * 80)
-            }
-
-            // Exact typed word gets a strong score once learned so names/slang are not "fixed" away.
-            let typedFrequency = LocalLanguageModel.shared.frequency(of: sourceWord)
-            add(sourceWord, score: 950 + typedFrequency * 25)
-
-            if let correction = primary.0 { add(correction, score: typedFrequency > 1 ? 900 : 1250) }
-            for (index, value) in primary.1.dropFirst().enumerated() { add(value, score: 1080 - index * 18) }
-            for (index, value) in primary.2.enumerated() { add(value, score: 1020 - index * 12) }
-
-            if let correction = secondary.0 { add(correction, score: 820) }
-            for (index, value) in secondary.1.dropFirst().enumerated() { add(value, score: 760 - index * 14) }
-            for (index, value) in secondary.2.enumerated() { add(value, score: 720 - index * 10) }
-
-            let ranked = scores
-                .sorted { lhs, rhs in lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value > rhs.value }
-                .prefix(3)
-                .compactMap { display[$0.key] }
-
-            var choices = Array(ranked)
-            while choices.count < 3 { choices.append("") }
-
-            DispatchQueue.main.async {
-                guard let self,
-                      self.predictionGeneration == generation,
-                      self.currentWord() == sourceWord else { return }
-
-                // Auto-correct only from the currently dominant language and never override
-                // words the user has already taught Milazy repeatedly.
-                if typedFrequency > 2 {
-                    self.cachedCorrection = nil
-                } else if let learnedFix = LocalLanguageModel.shared.learnedCorrections(for: sourceWord, limit: 1).first?.0 {
-                    self.cachedCorrection = (sourceWord, self.matchCase(learnedFix, source: sourceWord))
-                } else if let p = primary.0 {
-                    self.cachedCorrection = (sourceWord, self.matchCase(p, source: sourceWord))
-                } else if let s = secondary.0 {
-                    self.cachedCorrection = (sourceWord, self.matchCase(s, source: sourceWord))
-                } else {
-                    self.cachedCorrection = nil
-                }
-                self.setPredictions(choices)
-            }
-        }
-    }
-
-    private func preferredLanguage(for text: String) -> String {
-        switch KeyboardPreferences.shared.languageMode {
-        case .italian: return "it_IT"
-        case .english: return "en_US"
-        case .automatic: break
-        }
-
-        let tokens = words(in: text).map { $0.lowercased() }
-
-        let italian: Set<String> = [
-            "a","ad","al","alla","anche","ancora","bene","boh","ciao","che","chi","come",
-            "con","cosa","da","dai","dal","dalla","devo","di","dove","e","è","fa","fai",
-            "fare","fatto","gli","hai","ho","il","io","la","le","lo","ma","mi","mia","mio",
-            "ne","nel","nella","no","non","noi","ok","per","perché","più","poi","puoi","qua",
-            "qui","quindi","sei","si","sì","sono","sta","stai","sto","su","te","ti","tu",
-            "un","una","va","vai","voi","vorrei"
-        ]
-        let english: Set<String> = [
-            "a","about","all","also","am","and","are","as","at","be","because","but","can",
-            "come","do","for","from","go","good","have","he","hello","hey","how","i","if",
-            "in","is","it","just","like","me","my","no","not","of","ok","on","or","so",
-            "that","the","this","to","up","was","we","what","when","where","who","why",
-            "with","you","your"
-        ]
-
-        var itScore = 0
-        var enScore = 0
-        for token in tokens.suffix(8) {
-            if italian.contains(token) { itScore += token.count <= 2 ? 2 : 4 }
-            if english.contains(token) { enScore += token.count <= 2 ? 2 : 4 }
-            if token.range(of: "[àèéìòù]", options: .regularExpression) != nil { itScore += 5 }
-        }
-
-        let sample = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sample.count >= 8 {
-            let recognizer = NLLanguageRecognizer()
-            recognizer.processString(sample)
-            if recognizer.dominantLanguage == .italian { itScore += 5 }
-            if recognizer.dominantLanguage == .english { enScore += 5 }
-        }
-
-        // Bilingual keyboard, but when the evidence is tied prefer Italian instead of
-        // always falling back to English. English takes over as soon as its evidence wins.
-        return itScore >= enScore ? "it_IT" : "en_US"
     }
 
     private func setPredictions(_ values: [String]) {
@@ -869,19 +698,17 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
     }
 
     @objc private func usePrediction(_ sender: UIButton) {
-        guard let value = sender.currentTitle, !value.isEmpty else { return }
+        guard let value = sender.currentTitle, !value.isEmpty,
+              let context = textDocumentProxy.documentContextBeforeInput,
+              predictionContext == context else { return }
         let before = currentWord()
-        let previous = previousWord(in: textDocumentProxy.documentContextBeforeInput ?? "")
-        if let before {
-            replaceCurrentWord(with: value)
-            if before.caseInsensitiveCompare(value) != .orderedSame {
-                LocalLanguageModel.shared.learnCorrection(from: before, to: value)
-            }
-        } else {
-            textDocumentProxy.insertText(value)
-        }
-        LocalLanguageModel.shared.learn(word: value, previous: previous)
-        schedulePredictionRefresh()
+        let previous = TextContext.previousWord(in: context)
+        if before != nil { replaceCurrentWord(with: value) }
+        else { textDocumentProxy.insertText(value) }
+        undoCorrection = nil
+        didInsertText()
+        predictionEngine.learn(word: value, previous: previous,
+            mode: KeyboardPreferences.shared.languageMode, selectedFrom: before)
     }
 
     private func replaceCurrentWord(with replacement: String) {
@@ -1307,4 +1134,6 @@ final class KeyboardViewController: UIInputViewController, UIInputViewAudioFeedb
         visit(aiPanel)
     }
 }
+
+
 

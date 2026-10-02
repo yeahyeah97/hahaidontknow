@@ -54,6 +54,54 @@ enum TypingCoreTests {
         expect(restored.probabilityScore(for: "a", point: CGPoint(x: 27, y: 25), frame: candidates[0].frame)
                < restored.probabilityScore(for: "a", point: CGPoint(x: 6, y: 25), frame: candidates[0].frame),
                "Touch offsets persist")
+        var language = BilingualLanguageState()
+        expect(language.observe("hello how ") == .italian, "One sample cannot switch language")
+        expect(language.observe("hello how ") == .italian, "Repeated callback cannot vote twice")
+        expect(language.observe("hello how are you ") == .english, "Repeated English evidence switches")
+        expect(language.observe("hello how are you ciao ") == .english, "Mixed word does not flap")
+
+        let learned = LocalLanguageModel(defaults: defaults)
+        let empty = learned.snapshot()
+        var index = CorrectionIndex(personal: empty, mode: .automatic)
+        expect(index.correction(for: "teh", previous: nil) == "the", "Immediate known typo")
+        expect(index.correction(for: "perche", previous: nil) == "perché", "Immediate Italian accent")
+        expect(index.correction(for: "helol", previous: nil) == "hello", "Local transposition")
+        expect(index.correction(for: "ciao", previous: nil) == nil, "Valid Italian preserved")
+        expect(index.correction(for: "hello", previous: nil) == nil, "Valid English preserved")
+        expect(index.correction(for: "Milazy", previous: nil) == nil, "Unfamiliar name preserved")
+        expect(index.correction(for: "boh", previous: nil) == nil, "Short slang preserved")
+        index.markValid("improbable")
+        expect(index.keeps("improbable"), "System exact words protected")
+
+        learned.learn(word: "milazy", previous: "ciao")
+        learned.learn(word: "milazy", previous: "ciao")
+        learned.learnCorrection(from: "mialzy", to: "milazy")
+        learned.persist()
+        let restoredWords = LocalLanguageModel(defaults: defaults).snapshot()
+        expect(restoredWords.frequency(of: "milazy") == 2, "Personal word persistence")
+        expect(restoredWords.contextFrequency("milazy", previous: "ciao") == 2, "Bigram persistence")
+        let personalIndex = CorrectionIndex(personal: restoredWords, mode: .automatic)
+        expect(personalIndex.correction(for: "mialzy", previous: nil) == "milazy", "Selected correction persisted")
+        expect(personalIndex.correction(for: "milazy", previous: nil) == nil, "Learned name protected")
+        learned.rejectCorrection(for: "mialzy")
+        let rejectedIndex = CorrectionIndex(personal: learned.snapshot(), mode: .automatic)
+        expect(rejectedIndex.correction(for: "mialzy", previous: nil) == nil, "Undo keeps original")
+        let lexicon = CorrectionIndex(personal: empty, mode: .automatic,
+            lexicon: [("omw", "On my way"), ("Zyki", "Zyki")])
+        expect(lexicon.correction(for: "omw", previous: nil) == "On my way", "Supplementary shortcut")
+        expect(lexicon.correction(for: "Zyki", previous: nil) == nil, "Supplementary name")
+        let italianOnly = CorrectionIndex(personal: empty, mode: .italian)
+        expect(italianOnly.correction(for: "teh", previous: nil) == nil, "Forced language respected")
+
+        let start = Date.timeIntervalSinceReferenceDate
+        for _ in 0..<1000 {
+            _ = index.correction(for: "helol", previous: nil)
+        }
+        let elapsed = Date.timeIntervalSinceReferenceDate - start
+        expect(elapsed < 3, "Bounded Space decisions: 1000 calls within 3 seconds on CI")
+        print("1000 local Space decisions: \(elapsed) seconds")
         print("Typing core regression checks passed")
     }
 }
+
+
