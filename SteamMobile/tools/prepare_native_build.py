@@ -60,27 +60,7 @@ def patch_server(script, makefile):
     return script, objects
 
 
-def prepare(root):
-    pending = {}
-    path = root / "build/wineserver/build.sh"
-    pending[path], objects = patch_server(path.read_text(encoding="utf-8"), (root / "wine/server/Makefile.in").read_text(encoding="utf-8"))
-    # ntdll used to continue to archiving after compile errors, potentially
-    # picking up an old object on incremental builds.
-    path = root / "build/ntdll-unix/build.sh"
-    pending[path] = once(path.read_text(encoding="utf-8"),
-        '    echo "Failed:$FAILED_FILES"\nfi',
-        '    echo "Failed:$FAILED_FILES"\n    exit 1\nfi')
-    # This header is generated in the configured host tree too; an unrelated
-    # ARM64EC configured tree is not needed to compile native dwrite.
-    pending[path] = once(pending[path], '-I"$REPO_ROOT/wine/build-arm64ec/include"',
-                         '-I"$WINE_BUILD/include"')
-    path = root / "toolchains/llvm-project/llvm/cmake/modules/AddLLVM.cmake"
-    text = path.read_text(encoding="utf-8")
-    if 'MATCHES "Darwin"' not in text:
-        raise ValueError("LLVM Darwin platform rule absent")
-    pending[path] = text.replace('MATCHES "Darwin"', 'MATCHES "Darwin|iOS"')
-    path = root / "build/dxmt-ios/build.sh"
-    text = path.read_text(encoding="utf-8")
+def patch_dxmt(script):
     # DXMT Meson generates three embedded Metal AIR headers before compiling
     # airconv_context.cpp. The upstream hand-written iOS script didn't copy
     # that generator edge; without it the first unit fails on air_msad.h.
@@ -105,9 +85,9 @@ for name in air_msad air_samplepos air_tessellation; do
 done
 
 echo "=== airconv (C++ 20, needs LLVM headers) ==="'''
-    text = once(text, 'echo "=== airconv (C++ 20, needs LLVM headers) ==="', shader_step)
-    start = text.index('# The app links libdxmt_combined.a')
-    pending[path] = text[:start] + '''# Steam Mobile: create the combined archive on a clean checkout as documented
+    script = once(script, 'echo "=== airconv (C++ 20, needs LLVM headers) ==="', shader_step)
+    start = script.index('# The app links libdxmt_combined.a')
+    return script[:start] + '''# Steam Mobile: create the combined archive on a clean checkout as documented
 # in upstream build/dxmt-ios/README.md. Do not refresh a pre-existing binary.
 COMBINED="$BUILD_DIR/libdxmt_combined.a"
 test -s "$LLVM_BUILD/lib/libLLVMCore.a"
@@ -117,6 +97,29 @@ xcrun --sdk iphoneos libtool -static -o "$COMBINED.tmp" \\
 mv "$COMBINED.tmp" "$COMBINED"
 cp "$COMBINED" "$REPO_ROOT/app/Madeira/libdxmt_combined.a"
 '''
+
+def prepare(root):
+    pending = {}
+    path = root / "build/wineserver/build.sh"
+    pending[path], objects = patch_server(path.read_text(encoding="utf-8"), (root / "wine/server/Makefile.in").read_text(encoding="utf-8"))
+    # ntdll used to continue to archiving after compile errors, potentially
+    # picking up an old object on incremental builds.
+    path = root / "build/ntdll-unix/build.sh"
+    pending[path] = once(path.read_text(encoding="utf-8"),
+        '    echo "Failed:$FAILED_FILES"\nfi',
+        '    echo "Failed:$FAILED_FILES"\n    exit 1\nfi')
+    # This header is generated in the configured host tree too; an unrelated
+    # ARM64EC configured tree is not needed to compile native dwrite.
+    pending[path] = once(pending[path], '-I"$REPO_ROOT/wine/build-arm64ec/include"',
+                         '-I"$WINE_BUILD/include"')
+    path = root / "toolchains/llvm-project/llvm/cmake/modules/AddLLVM.cmake"
+    text = path.read_text(encoding="utf-8")
+    if 'MATCHES "Darwin"' not in text:
+        raise ValueError("LLVM Darwin platform rule absent")
+    pending[path] = text.replace('MATCHES "Darwin"', 'MATCHES "Darwin|iOS"')
+    path = root / "build/dxmt-ios/build.sh"
+    text = path.read_text(encoding="utf-8")
+    pending[path] = patch_dxmt(text)
     # Validate all anchors before modifying any source.
     for path, text in pending.items():
         path.write_text(text, encoding="utf-8", newline="\n")
