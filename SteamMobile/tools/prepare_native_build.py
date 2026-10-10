@@ -133,6 +133,17 @@ def prepare(root):
     path = root / "build/dxmt-ios/build.sh"
     text = path.read_text(encoding="utf-8")
     pending[path] = patch_dxmt(text)
+    # Xcode 27 changed the internal Metal atomic builtin signature (4 -> 5
+    # arguments). The source-pinned shader is older than that implementation.
+    # Use the supported Metal C++ atomic API instead of private builtins.
+    # Preserve threadgroup memory scope and relaxed ordering.
+    path = root / "dxmt/src/airconv/shaders/air_tessellation.metal"
+    source = path.read_text(encoding="utf-8")
+    pending[path] = once(
+        source,
+        'return __metal_atomic_fetch_add_explicit(out_count, 1, int(memory_order_relaxed), __METAL_MEMORY_SCOPE_THREADGROUP__);',
+        'return atomic_fetch_add_explicit((threadgroup atomic_int *)out_count, 1, memory_order_relaxed);',
+    )
     # Validate all anchors before modifying any source.
     for path, text in pending.items():
         path.write_text(text, encoding="utf-8", newline="\n")
