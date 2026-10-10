@@ -30,6 +30,10 @@ jobs:
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/FPSOverlay.swift -o /tmp/steam-mobile/Madeira/app/Madeira/FPSOverlay.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/Library.swift -o /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
           python3 SteamMobile/tools/patch_ui.py --madeira /tmp/steam-mobile/Madeira
+          python3 SteamMobile/tools/patch_gamenative_achievements.py --madeira /tmp/steam-mobile/Madeira
+          grep -q 'case clientGetUserStats = 818' /tmp/steam-mobile/Madeira/app/Madeira/SwiftSteam/Core/SteamProtocol.swift
+          grep -q 'struct SteamMobileAchievement' /tmp/steam-mobile/Madeira/app/Madeira/SteamOwnedLibrary.swift
+          grep -q 'steamMobileAchievements(for:' /tmp/steam-mobile/Madeira/app/Madeira/SteamOwnedLibrary.swift
           grep -q 'struct SteamMobilePerformanceTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
           grep -q 'struct SteamMobileLaunchersTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
           grep -q 'struct SteamMobileAchievementsTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
@@ -44,7 +48,7 @@ jobs:
         run: |
           python3 SteamMobile/tests/verify_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt
       - name: Check native UI and icon generator Python syntax
-        run: python3 -m py_compile SteamMobile/tools/patch_ui.py SteamMobile/tools/generate_app_icon.py
+        run: python3 -m py_compile SteamMobile/tools/patch_ui.py SteamMobile/tools/generate_app_icon.py SteamMobile/tools/patch_gamenative_achievements.py
       - name: Reject fake/partial optimized IPA fixtures
         run: python3 SteamMobile/tests/test_package_guard.py
       - name: Test JIT pairing identifiers survive unsigned IPA repackaging
