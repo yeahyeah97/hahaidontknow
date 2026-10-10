@@ -300,6 +300,50 @@ def patch_app_jit_registration(src):
     }"""
     return replace_one(src, old, new, "JIT pairing app launch registration")
 
+
+def patch_fps_overlay(src):
+    """Keep 100 ms present samples but avoid 10 Hz SwiftUI State invalidations."""
+    old = """struct FPSOverlay: View {"""
+    new = """// Steam Mobile PERF-003: a stable reference store prevents the 100 ms
+// sampling timer from marking the entire overlay's SwiftUI view as dirty.
+// The visible present count / FPS still refresh every 250 ms.
+private final class SteamMobileFpsSampleStore {
+    var samples: [(t: CFAbsoluteTime, c: UInt64)] = []
+}
+
+struct FPSOverlay: View {"""
+    src = replace_one(src, old, new, "FPS overlay private reference sample store")
+    src = replace_one(
+        src,
+        '    @State private var samples: [(t: CFAbsoluteTime, c: UInt64)] = []',
+        '    @State private var sampleStore = SteamMobileFpsSampleStore()',
+        "FPS overlay samples non-observable",
+    )
+    src = replace_one(src, '        samples = [(now, c)]',
+                      '        sampleStore.samples = [(now, c)]', "FPS overlay reset")
+    old = """            samples.append((t, cur))
+            if samples.count > bufferCapacity { samples.removeFirst() }
+            presentCount = cur"""
+    new = """            sampleStore.samples.append((t, cur))
+            if sampleStore.samples.count > bufferCapacity { sampleStore.samples.removeFirst() }
+            // No @State publication here: avoid waking the SwiftUI view at 10 Hz."""
+    src = replace_one(src, old, new, "FPS 100 ms buffer without UI publish")
+    src = replace_one(src,
+        """        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+            fps = computeAdaptiveFPS()""",
+        """        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+            presentCount = madeira_get_present_count()
+            fps = computeAdaptiveFPS()""",
+        "FPS visible present display tick")
+    src = replace_one(src,
+        """    private func computeAdaptiveFPS() -> Double {
+        guard samples.count >= 2 else { return 0 }""",
+        """    private func computeAdaptiveFPS() -> Double {
+        let samples = sampleStore.samples
+        guard samples.count >= 2 else { return 0 }""",
+        "FPS adaptive window preserved")
+    return src
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--madeira", type=Path, required=True)
@@ -313,7 +357,8 @@ def main():
         (args.madeira / "app/Madeira/Winios/Winios.m", patch_winios),
         (args.madeira / "app/Madeira/FEXBridge.mm", patch_fex_bridge),
         (args.madeira / "app/Madeira/JITPairing.swift", patch_jit_pairing),
-        (args.madeira / "app/Madeira/MadeiraApp.swift", patch_app_jit_registration)
+        (args.madeira / "app/Madeira/MadeiraApp.swift", patch_app_jit_registration),
+        (args.madeira / "app/Madeira/FPSOverlay.swift", patch_fps_overlay)
     ]
     staged = []
     try:
