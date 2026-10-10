@@ -97,6 +97,36 @@ jobs:
           with open(plist_path, "wb") as stream:
               plistlib.dump(metadata, stream)
           PY
+      - name: Build the real Madeira Dock host for Steam-owned games and downloads
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          T="$RUNNER_TEMP/steam-mobile-llvm-mingw.tar.xz"
+          curl --fail --location --retry 3 --retry-delay 3 --silent --show-error \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz \
+            -o "$T"
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  $T" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/steam-mobile-cross"
+          tar -xJf "$T" -C "$RUNNER_TEMP/steam-mobile-cross"
+          CROSS="$RUNNER_TEMP/steam-mobile-cross/llvm-mingw-20260421-ucrt-macos-universal/bin"
+          test -x "$CROSS/x86_64-w64-mingw32-clang"
+          LLVM_MINGW="$CROSS" bash "$R/build/madeira-dock/build.sh"
+          test -s "$R/app/Madeira/arm64ec-windows/dockhost.exe"
+          test -s "$R/app/Madeira/arm64ec-windows/dock-notices.txt"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, sys
+          sys.path.insert(0, 'SteamMobile/tools')
+          from inspect_binary import windows_dll
+          binary = Path(os.environ['RUNNER_TEMP']) / 'Madeira/app/Madeira/arm64ec-windows/dockhost.exe'
+          # A real 64-bit Windows PE console executable, not a .dll and not an empty placeholder.
+          data = binary.read_bytes()
+          assert data[:2] == b'MZ' and len(data) > 4096
+          assert data[int.from_bytes(data[60:64], 'little'):][:4] == b'PE\\x00\\x00'
+          print('Steam Mobile Dock native Windows host compiled:', len(data), 'bytes')
+          PY
       - name: Parse patched iOS JIT pairing Swift before native linking
         shell: bash
         run: |
@@ -271,6 +301,8 @@ jobs:
           done
           test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-handoff.json"
           test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-app.zip"
+          test -s "$R/app/Madeira/arm64ec-windows/dockhost.exe"
+          test -s "$R/app/Madeira/arm64ec-windows/dock-notices.txt"
           bash "$R/build/stage-licenses.sh"
           # Microsoft DLLs are supplied/licensed on the user's PC, not uploaded
           # to GitHub. A verified *linked native app* is the sole CI deliverable
