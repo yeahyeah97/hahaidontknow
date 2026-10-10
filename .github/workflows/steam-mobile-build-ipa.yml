@@ -140,6 +140,12 @@ jobs:
           cp -R "$APP" "$RUNNER_TEMP/nativeipa/Payload/"
           (cd "$RUNNER_TEMP/nativeipa" && zip -qry "$RUNNER_TEMP/native_unrepacked.ipa" Payload)
           python3 SteamMobile/tools/repack_ipa_for_signing.py             "$RUNNER_TEMP/native_unrepacked.ipa"             "$GITHUB_WORKSPACE/SteamMobile_Engine_SM001_unsigned.ipa"             --bundle-id com.steammobile.engine --name "Steam Mobile"
+      - name: Prove this is a patched native IPA, not a renamed Madeira release
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 SteamMobile/tools/verify_optimized_ipa.py \
+            SteamMobile_Engine_SM001_unsigned.ipa --bundle-id com.steammobile.engine
       - name: Upload actually compiled native IPA
         uses: actions/upload-artifact@v4
         with:
