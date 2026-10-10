@@ -45,9 +45,21 @@ def pe_dll(*, machine=0x8664):
     return bytes(data)
 
 
+
+def pe_exe():
+    data = bytearray(4096)
+    data[:2] = b'MZ'
+    struct.pack_into('<I', data, 60, 128)
+    data[128:132] = bytes([80, 69, 0, 0])
+    struct.pack_into('<HHIIIHH', data, 132, 0x8664, 1, 0, 0, 0, 240, 0x22)
+    struct.pack_into('<H', data, 152, 0x20B)
+    struct.pack_into('<8s6I2HI', data, 392, b'.text', 512, 4096, 512, 512, 0, 0, 0, 0, 0x60000020)
+    return bytes(data)
+
+
 def fixture(path, *, marker=True, crt=True, helper=True, fex=True, pairing=True,
             platform=2, crt_machine=0x8664, placeholder_crt=False, placeholder_main=False,
-            debug=False, debug_missing=False, unlinked_marker=False):
+            debug=False, debug_missing=False, unlinked_marker=False, dock=True):
     main = (b'\xcf\xfa\xed\xfe' + b'A' * 8192 if placeholder_main else
             macho(platform=platform, dependency='@rpath/Madeira.debug.dylib' if debug else None))
     main += MARKER if marker and not debug and not unlinked_marker else b''
@@ -75,6 +87,9 @@ def fixture(path, *, marker=True, crt=True, helper=True, fex=True, pairing=True,
                            b'placeholder' if placeholder_crt else pe_dll(machine=crt_machine))
         if fex:
             z.writestr(ROOT + "arm64ec-windows/xtajit64.dll", pe_dll())
+        if dock:
+            z.writestr(ROOT + "arm64ec-windows/dockhost.exe", pe_exe())
+            z.writestr(ROOT + "arm64ec-windows/dock-notices.txt", b"Dock source and GPL license notice " * 8)
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -88,6 +103,7 @@ with tempfile.TemporaryDirectory() as tmp:
         ("missing licensed CRT", {"crt": False}),
         ("missing JIT helper", {"helper": False}),
         ("missing FEX translator", {"fex": False}),
+        ("missing Steam Dock host", {"dock": False}),
         ("mismatched pairing background IDs", {"pairing": False}),
         ("macOS executable", {"platform": 1}),
         ("iOS simulator executable", {"platform": 7}),
