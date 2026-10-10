@@ -12,11 +12,19 @@ from verify_optimized_ipa import InvalidOptimizedIPA, MARKER, validate
 ROOT = "Payload/Madeira.app/"
 
 
-def fixture(path, *, marker=True, crt=True, helper=True, fex=True):
+def fixture(path, *, marker=True, crt=True, helper=True, fex=True, pairing=True):
     main = b"\xcf\xfa\xed\xfe" + (b"A" * 8192) + (MARKER if marker else b"")
     jit = b"\xcf\xfa\xed\xfe" + b"B" * 8192
     with zipfile.ZipFile(path, "w") as z:
-        z.writestr(ROOT + "Info.plist", plistlib.dumps({"CFBundleIdentifier": "com.steammobile.engine"}))
+        z.writestr(ROOT + "Info.plist", plistlib.dumps({
+            "CFBundleIdentifier": "com.steammobile.engine",
+            "BGTaskSchedulerPermittedIdentifiers": (
+                ["com.steammobile.engine.download.*", "com.steammobile.engine.pairing.*"]
+                if pairing else ["com.original.madeira.pairing.*"]
+            ),
+            "NSBonjourServices": ["_remotepairing-pairable-host._tcp"],
+            "NSLocalNetworkUsageDescription": "On-device pairing",
+        }))
         z.writestr(ROOT + "Madeira", main)
         z.writestr(ROOT + "PlugIns/MadeiraJITHelper.appex/Info.plist",
                    plistlib.dumps({"CFBundleIdentifier": "com.steammobile.engine.JITHelper"}))
@@ -37,6 +45,7 @@ with tempfile.TemporaryDirectory() as tmp:
         ("missing licensed CRT", {"crt": False}),
         ("missing JIT helper", {"helper": False}),
         ("missing FEX translator", {"fex": False}),
+        ("mismatched pairing background IDs", {"pairing": False}),
     ]:
         fixture(p, **flags)
         try:
