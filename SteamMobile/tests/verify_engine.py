@@ -14,9 +14,20 @@ args = ap.parse_args()
 dxmt_header = args.dxmt / "src/d3d9/d3d9_multithread.hpp"
 ios_bridge = args.madeira / "app/Madeira/Winios/Winios.m"
 fex_bridge = args.madeira / "app/Madeira/FEXBridge.mm"
+jit_pairing = args.madeira / "app/Madeira/JITPairing.swift"
+jit_app = args.madeira / "app/Madeira/MadeiraApp.swift"
 header = dxmt_header.read_text()
 bridge = ios_bridge.read_text()
 fex = fex_bridge.read_text()
+pairing = jit_pairing.read_text()
+app = jit_app.read_text()
+assert "registerContinuedProcessingAtLaunch()" in app
+assert "OnDevicePairing.shared.registerContinuedProcessingAtLaunch()" in app
+assert "background pairing handler registered at launch" in pairing
+assert "registered == identifier" in pairing
+assert "DNSServiceSetDispatchQueue(ref, .main)" in pairing
+assert "Bonjour pairing advertisement registered" in pairing
+assert "iOS denied the continued pairing task" in pairing
 assert "Steam Mobile SM-001: owner recursion" in header
 assert "std::memory_order_relaxed" in header
 assert "std::memory_order_acquire" in header
