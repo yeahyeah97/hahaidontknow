@@ -124,7 +124,7 @@ jobs:
           # A real 64-bit Windows PE console executable, not a .dll and not an empty placeholder.
           data = binary.read_bytes()
           assert data[:2] == b'MZ' and len(data) > 4096
-          assert data[int.from_bytes(data[60:64], 'little'):][:4] == b'PE\\x00\\x00'
+          assert data[int.from_bytes(data[60:64], 'little'):][:4] == bytes([0x50, 0x45, 0, 0])
           print('Steam Mobile Dock native Windows host compiled:', len(data), 'bytes')
           PY
       - name: Parse patched iOS JIT pairing Swift before native linking
