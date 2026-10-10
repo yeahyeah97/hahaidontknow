@@ -86,6 +86,19 @@ done
 
 echo "=== airconv (C++ 20, needs LLVM headers) ==="'''
     script = once(script, 'echo "=== airconv (C++ 20, needs LLVM headers) ==="', shader_step)
+    # Print the actual failed object's stderr in Actions; the old DXMT
+    # script reported only its object name and buried the error in artifacts.
+    script = once(
+        script,
+        '    echo "See .err files in $OBJ_DIR/"',
+        '''    echo "See .err files in $OBJ_DIR/"
+    for failed_object in $FAILED_FILES; do
+        if [ -s "$OBJ_DIR/$failed_object.err" ]; then
+            echo "==== $failed_object compiler diagnostics ===="
+            sed -n '1,100p' "$OBJ_DIR/$failed_object.err"
+        fi
+    done''',
+    )
     start = script.index('# The app links libdxmt_combined.a')
     return script[:start] + '''# Steam Mobile: create the combined archive on a clean checkout as documented
 # in upstream build/dxmt-ios/README.md. Do not refresh a pre-existing binary.
