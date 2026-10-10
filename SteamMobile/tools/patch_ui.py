@@ -371,57 +371,243 @@ struct SteamMobileAchievementsTab: View {
     }
 }
 
+private enum SteamMobileLauncherSource: String, CaseIterable, Identifiable {
+    case ea, epic, ubisoft, gog, battle
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .ea: "EA App"
+        case .epic: "Epic Games"
+        case .ubisoft: "Ubisoft Connect"
+        case .gog: "GOG Galaxy"
+        case .battle: "Battle.net"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .ea: "soccerball"
+        case .epic: "square.stack"
+        case .ubisoft: "circle.hexagongrid.fill"
+        case .gog: "moon.stars.fill"
+        case .battle: "gamecontroller.fill"
+        }
+    }
+    var website: URL {
+        switch self {
+        case .ea: URL(string: "https://www.ea.com/ea-app")!
+        case .epic: URL(string: "https://store.epicgames.com/en-US/download")!
+        case .ubisoft: URL(string: "https://www.ubisoft.com/en-us/ubisoft-connect/download")!
+        case .gog: URL(string: "https://www.gog.com/galaxy")!
+        case .battle: URL(string: "https://download.battle.net/en-us/desktop")!
+        }
+    }
+    // Official publisher delivery endpoints, not guessed URLs or mirrors.
+    // Epic currently distributes an MSI; don't misleadingly execute it as EXE.
+    var installer: URL? {
+        switch self {
+        case .ea:
+            URL(string: "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe")
+        case .ubisoft:
+            URL(string: "https://static3.cdn.ubi.com/orbit/launcher_installer/UbisoftConnectInstaller.exe")
+        case .battle:
+            URL(string: "https://downloader.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live")
+        case .gog, .epic: nil
+        }
+    }
+    var deliveryHosts: Set<String> {
+        switch self {
+        case .ea: ["origin-a.akamaihd.net"]
+        case .ubisoft: ["static3.cdn.ubi.com"]
+        case .battle: ["downloader.battle.net", "dist.blizzard.com", "us.patch.battle.net",
+                       "eu.patch.battle.net", "cdn.blizzard.com", "blzstatic.com"]
+        case .gog: ["content-system.gog.com", "cdn.gog.com"]
+        case .epic: []
+        }
+    }
+}
+
+// An official publisher may redirect to its own CDN; refuse arbitrary hosts.
+private final class SteamMobileLauncherRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let hosts: Set<String>
+    init(hosts: Set<String>) { self.hosts = hosts }
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        let target = request.url
+        completionHandler(target?.scheme == "https" && target?.port == nil &&
+                          target?.user == nil && target?.password == nil &&
+                          hosts.contains(target?.host?.lowercased() ?? "") ? request : nil)
+    }
+}
+
+@MainActor
+private final class SteamMobileLauncherFetcher: ObservableObject {
+    @Published var busy: String?
+    @Published var problem: String?
+    func download(_ source: SteamMobileLauncherSource) async throws -> URL {
+        guard busy == nil else { throw NSError(domain: "SteamMobileInstaller", code: 1,
+                                               userInfo: [NSLocalizedDescriptionKey: "Another installer is downloading."]) }
+        busy = source.id
+        defer { busy = nil }
+        let url: URL
+        if source == .gog {
+            // GOG's own version manifest; never hardcode a years-old Galaxy EXE.
+            let manifest = URL(string: "https://remote-config.gog.com/components/webinstaller?component_version=2.0.0")!
+            let (data, response) = try await URLSession.shared.data(from: manifest)
+            guard let r = response as? HTTPURLResponse, r.statusCode == 200,
+                  data.count < (1 << 20),
+                  let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let content = root["content"] as? [String: Any],
+                  let windows = content["windows"] as? [String: Any],
+                  let link = windows["downloadLink"] as? String,
+                  let downloadURL = URL(string: link) else {
+                throw NSError(domain: "SteamMobileInstaller", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "GOG didn't provide a trusted Windows download link."])
+            }
+            url = downloadURL
+        } else {
+            guard let direct = source.installer else {
+                throw NSError(domain: "SteamMobileInstaller", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "This launcher doesn't offer a verified EXE download endpoint."])
+            }
+            url = direct
+        }
+        guard url.scheme == "https", url.port == nil, url.user == nil, url.password == nil,
+              source.deliveryHosts.contains(url.host?.lowercased() ?? "") else {
+            throw NSError(domain: "SteamMobileInstaller", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Installer URL is not a trusted publisher host."])
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        let session = URLSession(configuration: config,
+                                 delegate: SteamMobileLauncherRedirects(hosts: source.deliveryHosts),
+                                 delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (temporary, response) = try await session.download(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.url?.scheme == "https",
+              source.deliveryHosts.contains(http.url?.host?.lowercased() ?? "") else {
+            throw NSError(domain: "SteamMobileInstaller", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "Publisher download was rejected or redirected outside its trusted hosts."])
+        }
+        let file = try FileHandle(forReadingFrom: temporary)
+        defer { try? file.close() }
+        let header = try file.read(upToCount: 64) ?? Data()
+        guard header.count == 64, header[0] == 0x4d, header[1] == 0x5a else {
+            throw NSError(domain: "SteamMobileInstaller", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey: "The server did not return a Windows EXE."])
+        }
+        let peOffset = (0..<4).reduce(UInt64(0)) { $0 | (UInt64(header[60 + $1]) << ($1 * 8)) }
+        guard peOffset >= 64 && peOffset < 16 * 1024 * 1024 else {
+            throw NSError(domain: "SteamMobileInstaller", code: 7,
+                          userInfo: [NSLocalizedDescriptionKey: "Malformed installer PE header."])
+        }
+        try file.seek(toOffset: peOffset)
+        let signature = try file.read(upToCount: 6) ?? Data()
+        guard signature.count == 6, Array(signature.prefix(4)) == [0x50, 0x45, 0, 0],
+              [0x014c, 0x8664].contains(Int(signature[4]) | Int(signature[5]) << 8) else {
+            throw NSError(domain: "SteamMobileInstaller", code: 8,
+                          userInfo: [NSLocalizedDescriptionKey: "Installer isn't an x86/x64 Windows executable."])
+        }
+        let size = try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber
+        guard let bytes = size?.int64Value, bytes >= 4096, bytes < 700 * 1024 * 1024 else {
+            throw NSError(domain: "SteamMobileInstaller", code: 9,
+                          userInfo: [NSLocalizedDescriptionKey: "Installer has an invalid size."])
+        }
+        let folder = LibraryModel.drive.appendingPathComponent("SteamMobileLaunchers", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(source.id + "-official-installer.exe")
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        return destination
+    }
+}
+
 struct SteamMobileLaunchersTab: View {
-    var openInstaller: () -> Void
+    var runInstaller: (URL) -> Void
+    var startDock: (DockGame, Bool) -> Void
+    @StateObject private var fetcher = SteamMobileLauncherFetcher()
     @State private var showSteam = false
     @State private var showDock = false
-    var startDock: (DockGame, Bool) -> Void
-    private let titles = ["EA App", "Epic Games", "Ubisoft Connect", "GOG Galaxy", "Battle.net"]
-    private let symbols = ["soccerball", "square.stack", "circle.hexagongrid.fill", "moon.stars.fill", "gamecontroller.fill"]
+    @Environment(\.openURL) private var openURL
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("LAUNCHER HUB").font(.title2.weight(.black)).foregroundStyle(.white)
-                Text("Windows launcher installers run through Wine. Individual sign-in, WebView and DRM compatibility is experimental.")
-                    .font(.footnote).foregroundStyle(.white.opacity(0.7))
+                Text("Publisher downloads • one Windows environment. Compatibility depends on Wine, Windows services and DRM.")
+                    .font(.footnote).foregroundStyle(.white.opacity(0.72))
                 SteamMobileCard {
                     Label("Steam", systemImage: "gamecontroller.fill")
                         .font(.title3.weight(.semibold)).foregroundStyle(.white)
-                    Text("Your real Steam account and the native Steam game launcher.")
+                    Text("Native Steam library, installed games and game downloads.")
                         .font(.footnote).foregroundStyle(.white.opacity(0.75))
                     HStack {
-                        Button("Sign in") { showSteam = true }.buttonStyle(.borderedProminent)
-                        Button("Open Dock") { showDock = true }.buttonStyle(.bordered)
+                        Button("Steam account") { showSteam = true }.buttonStyle(.borderedProminent)
+                        Button("Open Steam client") { showDock = true }.buttonStyle(.bordered)
                     }
                 }
-                ForEach(Array(titles.enumerated()), id: \.offset) { i, name in
+                ForEach(SteamMobileLauncherSource.allCases) { launcher in
                     SteamMobileCard {
-                        HStack {
-                            Image(systemName: symbols[i])
-                                .font(.title).foregroundStyle(SteamMobilePalette.violet)
-                                .frame(width: 40)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(name).font(.headline).foregroundStyle(.white)
-                                Text("Experimental installer · not verified")
+                        HStack(alignment: .top, spacing: 11) {
+                            Image(systemName: launcher.symbol)
+                                .font(.title2).foregroundStyle(SteamMobilePalette.violet)
+                                .frame(width: 34)
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(launcher.title).font(.headline).foregroundStyle(.white)
+                                Text("Windows launcher • installation and sign-in are experimental")
                                     .font(.caption2).foregroundStyle(.orange)
+                                HStack {
+                                    if launcher != .epic {
+                                        Button {
+                                            Task {
+                                                do {
+                                                    let path = try await fetcher.download(launcher)
+                                                    runInstaller(path)
+                                                } catch {
+                                                    fetcher.problem = error.localizedDescription
+                                                }
+                                            }
+                                        } label: {
+                                            if fetcher.busy == launcher.id {
+                                                ProgressView().tint(.white)
+                                            } else {
+                                                Label("Download & run", systemImage: "arrow.down.to.line")
+                                            }
+                                        }.buttonStyle(.borderedProminent)
+                                            .disabled(fetcher.busy != nil)
+                                    }
+                                    Button("Publisher site") { openURL(launcher.website) }
+                                        .buttonStyle(.bordered)
+                                }.font(.caption.weight(.semibold))
                             }
-                            Spacer()
-                            Button("Import EXE", action: openInstaller)
-                                .font(.caption.weight(.bold)).buttonStyle(.bordered)
                         }
                     }
                 }
                 SteamMobileCard {
-                    Label("Steam achievements", systemImage: "trophy")
-                        .font(.headline).foregroundStyle(.white)
-                    Text("Legitimate achievement synchronization needs a working native Steam client/Steamworks callback bridge. Not currently available in this build.")
-                        .font(.footnote).foregroundStyle(.white.opacity(0.75))
+                    Text("Epic Games distributes an MSI Windows installer. This build does not auto-execute MSI packages; use the official publisher site until the Wine MSI bridge is validated.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(16)
         }
-        .background(SteamMobilePalette.bg.ignoresSafeArea())
+        .background(
+            LinearGradient(colors: [SteamMobilePalette.bg,
+                                    SteamMobilePalette.violet.opacity(0.12),
+                                    SteamMobilePalette.bg],
+                           startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
+        )
         .sheet(isPresented: $showSteam) { SteamSignInView() }
         .sheet(isPresented: $showDock) { MadeiraDockView(start: startDock) }
+        .alert("Launcher download", isPresented: Binding(
+            get: { fetcher.problem != nil },
+            set: { if !$0 { fetcher.problem = nil } })) {
+            Button("OK", role: .cancel) { fetcher.problem = nil }
+        } message: {
+            Text(fetcher.problem ?? "")
+        }
     }
 }
 '''
@@ -439,7 +625,14 @@ def patch(src):
             )
                 .tabItem { Label("Performance", systemImage: "speedometer") }
                 .tag(2)
-            SteamMobileLaunchersTab(openInstaller: { browser = true }, startDock: startDock)
+            SteamMobileLaunchersTab(runInstaller: { url in
+                do {
+                    let entry = try LibraryModel.inspect(url)
+                    play(entry)
+                } catch {
+                    model.error = error.localizedDescription
+                }
+            }, startDock: startDock)
                 .tabItem { Label("Launchers", systemImage: "square.stack.3d.up.fill") }
                 .tag(3)
             SteamMobileAchievementsTab(openSteamLibrary: { switchTab(to: 0) })
