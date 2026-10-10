@@ -50,6 +50,27 @@ jobs:
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
           python3 SteamMobile/tools/patch_gamenative_achievements.py --madeira "$RUNNER_TEMP/Madeira"
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
+      - name: Preflight DXMT's generated AIR shader headers before costly LLVM build
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          OUT="$R/build/dxmt-ios/shader-headers"
+          mkdir -p "$OUT"
+          # Reproduce pinned DXMT meson's metalir/hexdump generators.
+          # This catches the exact airconv_context.cpp missing-header bug
+          # before running 30+ minutes of FEX/Wine/LLVM compilation.
+          for name in air_msad air_samplepos air_tessellation; do
+            xcrun -sdk macosx metal -std=metal3.1 --target=air64-apple-macos14.0 \
+              -c "$R/dxmt/src/airconv/shaders/$name.metal" -o "$OUT/$name.air"
+            xxd -n "$name" -i "$OUT/$name.air" "$OUT/$name.h"
+            test -s "$OUT/$name.air"
+            test -s "$OUT/$name.h"
+            grep -Fq "unsigned char $name[]" "$OUT/$name.h"
+            echo "$name.h generated and verified"
+          done
+          bash -n "$R/build/dxmt-ios/build.sh"
       - name: Integrate Steam Mobile UI and build branded iOS app icon
         timeout-minutes: 8
         shell: bash
