@@ -37,7 +37,8 @@ jobs:
           git clone --quiet --depth 1 --branch main https://github.com/willfaust/Madeira.git "$RUNNER_TEMP/Madeira"
           git clone --quiet --depth 1 --branch ios-port https://github.com/willfaust/dxmt.git "$RUNNER_TEMP/Madeira/dxmt"
           git clone --quiet --depth 1 --branch ios-port-2607 https://github.com/willfaust/FEX.git "$RUNNER_TEMP/Madeira/FEX"
-          echo "Engine source fetched: Madeira + DXMT + FEX"
+          git -C "$RUNNER_TEMP/Madeira/FEX" submodule update --init --depth 1 External/fmt External/range-v3 External/unordered_dense
+          echo "Engine source fetched: Madeira + DXMT + FEX + required FEX headers"
       - name: Apply genuine DXMT and Wine emulation patches
         shell: bash
         run: |
