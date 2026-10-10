@@ -209,6 +209,9 @@ struct SteamMobileLaunchersTab: View {
 '''
 
 def patch(src):
+    src = once(src, '    static let title = "Madeira"',
+               '    static let title = "Steam Mobile"',
+               "Steam Mobile header branding")
     a = '''            settings
                 .tabItem { Image(systemName: "gearshape.fill").accessibilityLabel("Settings") }
                 .tag(1)'''
