@@ -143,15 +143,20 @@ jobs:
           # Diagnostic only: Swift parsing is not type-checking. Run the
           # genuine Xcode build far enough to reveal Swift / asset errors.
           # We expect missing Wine/DXMT inputs to prevent the final link.
+          # GitHub's bash default is -e: preserve the return code before
+          # reporting errors, even when xcodebuild exits with status 65.
+          rc=0
           xcodebuild -project "$RUNNER_TEMP/Madeira/app/Madeira.xcodeproj" \
             -scheme Madeira -configuration Debug -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/SteamMobileDiagnosticDerived" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build > "$RUNNER_TEMP/SteamMobileTypecheck.log" 2>&1
-          rc=$?
+            build > "$RUNNER_TEMP/SteamMobileTypecheck.log" 2>&1 || rc=$?
           echo "Xcode diagnostic exit code: $rc"
-          grep -E 'error:|warning:|SwiftCompile|SwiftEmitModule|CompileAssetCatalog' "$RUNNER_TEMP/SteamMobileTypecheck.log" | tail -65 || true
+          grep -E 'error:|warning:|SwiftCompile|SwiftEmitModule|CompileAssetCatalog|BUILD FAILED' "$RUNNER_TEMP/SteamMobileTypecheck.log" | tail -95 || true
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::warning::Diagnostic compile was unsuccessful: genuine native dependencies are still absent."
+          fi
           exit "$rc"
       - name: Require real native build libraries and licensed CRT binaries
         shell: bash
