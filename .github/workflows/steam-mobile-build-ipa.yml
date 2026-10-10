@@ -52,6 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
+          python3 SteamMobile/tools/patch_gamenative_achievements.py --madeira "$RUNNER_TEMP/Madeira"
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
       - name: Integrate Steam Mobile UI and build branded iOS app icon
         timeout-minutes: 8
