@@ -153,6 +153,50 @@ struct SteamMobilePerformanceTab: View {
     }
 }
 
+struct SteamMobileAchievementsTab: View {
+    var openSteamLibrary: () -> Void
+    @State private var signedIn = SteamSignIn.isSignedIn
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 15) {
+                Label("ACHIEVEMENTS", systemImage: "trophy.fill")
+                    .font(.title2.weight(.black)).foregroundStyle(.cyan)
+                SteamMobileCard {
+                    HStack(spacing: 12) {
+                        Image(systemName: signedIn ? "checkmark.seal.fill" : "person.crop.circle.badge.questionmark")
+                            .font(.largeTitle).foregroundStyle(signedIn ? .green : .orange)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(signedIn ? "Steam account connected" : "Steam sign-in required")
+                                .font(.headline).foregroundStyle(.white)
+                            Text("Authentication is handled by Madeira's real Steam account session.")
+                                .font(.footnote).foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                }
+                SteamMobileCard {
+                    Label("Authenticated achievement tracking", systemImage: "lock.shield")
+                        .font(.headline).foregroundStyle(.white)
+                    Text("Not implemented yet. Steamworks achievements require real Steam client/user callbacks; neither local fake unlocks nor fabricated trophies will appear here.")
+                        .font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                    Button("Open your game library", action: openSteamLibrary)
+                        .buttonStyle(.borderedProminent)
+                }
+                SteamMobileCard {
+                    Label("Planned integration", systemImage: "wrench.and.screwdriver.fill")
+                        .font(.headline).foregroundStyle(.white)
+                    Text("Account-backed achievement catalog, game-specific progress and unlock events will appear only after validated client integration.")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.7))
+                }
+            }.padding(16)
+        }
+        .background(SteamMobilePalette.bg.ignoresSafeArea())
+        .onAppear { signedIn = SteamSignIn.isSignedIn }
+        .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in
+            signedIn = SteamSignIn.isSignedIn
+        }
+    }
+}
+
 struct SteamMobileLaunchersTab: View {
     var openInstaller: () -> Void
     @State private var showSteam = false
@@ -224,6 +268,9 @@ def patch(src):
             SteamMobileLaunchersTab(openInstaller: { browser = true }, startDock: startDock)
                 .tabItem { Label("Launchers", systemImage: "square.stack.3d.up.fill") }
                 .tag(3)
+            SteamMobileAchievementsTab(openSteamLibrary: { switchTab(to: 0) })
+                .tabItem { Label("Achievements", systemImage: "trophy.fill") }
+                .tag(4)
             settings
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(1)'''
@@ -275,7 +322,7 @@ def patch(src):
         }''',
         '''        .onReceive(controller.commands) { command in
             if selected == nil, !browser, !onboarding.presented, command == "tab" {
-                switchTab(to: tab == 0 ? 2 : tab == 2 ? 3 : tab == 3 ? 1 : 0)
+                switchTab(to: tab == 0 ? 2 : tab == 2 ? 3 : tab == 3 ? 4 : tab == 4 ? 1 : 0)
             }
         }''', "Steam Mobile controller tab cycle")
     if "struct SteamMobilePerformanceTab" in src:
