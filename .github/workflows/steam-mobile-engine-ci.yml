@@ -1,0 +1,31 @@
+name: Steam Mobile - native engine validation
+on:
+  push:
+    branches: [steam-mobile-engine-sm001]
+    paths:
+      - 'SteamMobile/**'
+      - '.github/workflows/steam-mobile-engine-ci.yml'
+  workflow_dispatch:
+jobs:
+  dx9-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned Madeira and DXMT engine sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/steam-mobile/Madeira/app/Madeira/Winios
+          mkdir -p /tmp/steam-mobile/dxmt/src/d3d9
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/Winios/Winios.m -o /tmp/steam-mobile/Madeira/app/Madeira/Winios/Winios.m
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/dxmt/db546ee466ad50ec6463edb5fa183de11db43761/src/d3d9/d3d9_multithread.hpp -o /tmp/steam-mobile/dxmt/src/d3d9/d3d9_multithread.hpp
+      - name: Dry-run native patch checks
+        run: |
+          python3 SteamMobile/tools/patch_native_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt --check
+      - name: Apply native engine patches to disposable upstream copies
+        run: |
+          python3 SteamMobile/tools/patch_native_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt --apply
+      - name: Compile patched DXMT D3D9 lock with real header and stress test threads
+        run: |
+          python3 SteamMobile/tests/verify_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt
