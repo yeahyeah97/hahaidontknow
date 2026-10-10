@@ -35,6 +35,8 @@ jobs:
       - name: Compile patched DXMT lock and check Wine/FEX hot-path guards
         run: |
           python3 SteamMobile/tests/verify_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt
+      - name: Reject fake/partial optimized IPA fixtures
+        run: python3 SteamMobile/tests/test_package_guard.py
       - name: Run host-only DX9 recursive-lock microbenchmark
         run: |
           c++ -std=c++17 -O3 -pthread SteamMobile/tests/bench_dx9_lock.cpp -o /tmp/steam-d9-lock-bench
