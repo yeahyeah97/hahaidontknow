@@ -64,7 +64,7 @@ int main() {
   for (int i=0;i<4;i++) threads.emplace_back(work);
   for(auto &t:threads)t.join();
   assert(shared==40000);
-  std::cout<<"D3D9 recursive lock PASS: "<<shared<<"\n";
+  std::cout<<"D3D9 recursive lock PASS: "<<shared<<"\\n";
 }
 """)
     cmd = ["c++", "-std=c++17", "-O2", "-pthread", "-DDXMT_MADEIRA",
