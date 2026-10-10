@@ -32,6 +32,7 @@ jobs:
           python3 SteamMobile/tools/patch_ui.py --madeira /tmp/steam-mobile/Madeira
           grep -q 'struct SteamMobilePerformanceTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
           grep -q 'struct SteamMobileLaunchersTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
+          grep -q 'struct SteamMobileAchievementsTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/dxmt/db546ee466ad50ec6463edb5fa183de11db43761/src/d3d9/d3d9_multithread.hpp -o /tmp/steam-mobile/dxmt/src/d3d9/d3d9_multithread.hpp
       - name: Dry-run native patch checks
         run: |
