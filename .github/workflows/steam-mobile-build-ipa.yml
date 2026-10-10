@@ -36,7 +36,8 @@ jobs:
           set -euo pipefail
           git clone --quiet --depth 1 --branch main https://github.com/willfaust/Madeira.git "$RUNNER_TEMP/Madeira"
           git clone --quiet --depth 1 --branch ios-port https://github.com/willfaust/dxmt.git "$RUNNER_TEMP/Madeira/dxmt"
-          echo "Engine source fetched: Madeira + DXMT"
+          git clone --quiet --depth 1 --branch ios-port-2607 https://github.com/willfaust/FEX.git "$RUNNER_TEMP/Madeira/FEX"
+          echo "Engine source fetched: Madeira + DXMT + FEX"
       - name: Apply genuine DXMT and Wine emulation patches
         shell: bash
         run: |
