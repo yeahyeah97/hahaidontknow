@@ -168,7 +168,16 @@ def patch_fex_bridge(src):
     }();
     if (trace_allocations)
         fex_log("JIT pool alloc: %zu bytes at RX=%p (offset %zu/%zu)", size, rx_ptr, offset + size, g_jit_pool_size);"""
-    return replace_one(src, old, new, "FEX success-path allocation log gate")
+    src = replace_one(src, old, new, "FEX success-path allocation log gate")
+    # This marker is emitted by the patched FEX bridge's JIT initialization.
+    # It remains in the final Mach-O, allowing packaging checks to reject an
+    # unmodified Madeira release masquerading as an optimized engine.
+    return replace_one(
+        src,
+        'fex_log("JIT pool initialized: RX=',
+        'fex_log("[STEAM_MOBILE_NATIVE_ENGINE_SM002] JIT pool initialized: RX=',
+        "FEX native build provenance marker",
+    )
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
