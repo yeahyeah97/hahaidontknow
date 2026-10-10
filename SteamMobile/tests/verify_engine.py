@@ -16,11 +16,19 @@ ios_bridge = args.madeira / "app/Madeira/Winios/Winios.m"
 fex_bridge = args.madeira / "app/Madeira/FEXBridge.mm"
 jit_pairing = args.madeira / "app/Madeira/JITPairing.swift"
 jit_app = args.madeira / "app/Madeira/MadeiraApp.swift"
+fps_overlay = args.madeira / "app/Madeira/FPSOverlay.swift"
 header = dxmt_header.read_text()
 bridge = ios_bridge.read_text()
 fex = fex_bridge.read_text()
 pairing = jit_pairing.read_text()
 app = jit_app.read_text()
+fps_ui = fps_overlay.read_text()
+assert "SteamMobileFpsSampleStore" in fps_ui
+assert "@State private var sampleStore = SteamMobileFpsSampleStore()" in fps_ui
+assert 'let samples = sampleStore.samples' in fps_ui
+assert "sampleStore.samples.append((t, cur))" in fps_ui
+assert 'presentCount = madeira_get_present_count()' in fps_ui
+assert "@State private var samples:" not in fps_ui
 assert "registerContinuedProcessingAtLaunch()" in app
 assert "OnDevicePairing.shared.registerContinuedProcessingAtLaunch()" in app
 assert "background pairing handler registered at launch" in pairing
