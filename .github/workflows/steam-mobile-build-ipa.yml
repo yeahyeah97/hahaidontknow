@@ -180,6 +180,16 @@ jobs:
           bash SteamMobile/tools/build_dxmt_native.sh "$RUNNER_TEMP/Madeira" 2>&1 | tee "$RUNNER_TEMP/SteamMobileDXMTBuild.log"
       - name: Record actual dependency inputs and toolchain versions
         run: python3 SteamMobile/tools/record_native_build.py "$RUNNER_TEMP/Madeira" "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json"
+      - name: Stage complete GPL and exception licenses before real Xcode link
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          bash "$R/build/stage-licenses.sh"
+          test -s "$R/app/Madeira/licenses/LICENSE-MADEIRA-GPL-3.0.txt"
+          test -s "$R/app/Madeira/licenses/LICENSE-MADEIRA-EXCEPTION.txt"
+          cmp "$R/COPYING" "$R/app/Madeira/licenses/LICENSE-MADEIRA-GPL-3.0.txt"
+          cmp "$R/LICENSE-EXCEPTION.md" "$R/app/Madeira/licenses/LICENSE-MADEIRA-EXCEPTION.txt"
       - name: Diagnose Xcode Swift compile before incomplete native link
         id: native_link
         timeout-minutes: 12
@@ -234,18 +244,16 @@ jobs:
           name: SteamMobile_native_app_REQUIRES_LOCAL_RUNTIME
           path: ${{ runner.temp }}/SteamMobileNativeHandoff
           if-no-files-found: error
-      - name: Require real native build libraries and licensed CRT binaries
+      - name: Require genuinely built native archives; route licensed CRT to local handoff
+        id: release_prerequisites
         shell: bash
         run: |
           set -euo pipefail
           R="$RUNNER_TEMP/Madeira"
-          missing=0
-          # Both independent builds must succeed. A leftover partial archive
-          # must never make the release gate pass after a compiler error.
-          [[ '${{ steps.wine_native.outcome }}' == success ]] || missing=1
-          [[ '${{ steps.dxmt_native.outcome }}' == success ]] || missing=1
-          # Do not create empty stand-ins. Upstream's clean-checkout
-          # docs/BUILDING.md records these unbundled/unreproducible inputs.
+          # CI must NEVER publish a partially built archive or a stock IPA.
+          test '${{ steps.wine_native.outcome }}' = success
+          test '${{ steps.dxmt_native.outcome }}' = success
+          test '${{ steps.native_link.outcome }}' = success
           for rel in \
             app/Madeira/libdxmt_combined.a \
             app/Madeira/libntdll_unix.a \
@@ -257,21 +265,25 @@ jobs:
             app/Madeira/libswresample.a \
             app/Madeira/libavutil.a; do
             if [[ ! -s "$R/$rel" ]]; then
-              echo "::error file=$rel::Missing real iOS static library (upstream docs/BUILDING.md)"
-              missing=1
+              echo "::error file=$rel::Required real iOS native library missing"
+              exit 1
             fi
           done
-          if [[ ! -d "$R/app/Madeira/x86_64-vcruntime" ]] || \
-             [[ -z "$(find "$R/app/Madeira/x86_64-vcruntime" -type f -iname '*.dll' -print -quit 2>/dev/null)" ]]; then
-            echo "::error::Missing licensed Microsoft x64 VC runtime DLLs"
-            missing=1
-          fi
-          if [[ "$missing" -ne 0 ]]; then
-            echo "::error::Native prerequisites unavailable: no valid optimized IPA can be produced from this checkout."
-            exit 1
-          fi
+          test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-handoff.json"
+          test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-app.zip"
           bash "$R/build/stage-licenses.sh"
+          # Microsoft DLLs are supplied/licensed on the user's PC, not uploaded
+          # to GitHub. A verified *linked native app* is the sole CI deliverable
+          # when there are no CRT files on the macOS runner.
+          if [[ -d "$R/app/Madeira/x86_64-vcruntime" ]] && \
+             [[ -n "$(find "$R/app/Madeira/x86_64-vcruntime" -type f -iname '*.dll' -print -quit)" ]]; then
+            echo "crt_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "crt_present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Native app linked and exported. Add the 12 hash-pinned Microsoft CRT DLLs using SteamMobile/tools/assemble_local_ipa.py on the user's authorized computer."
+          fi
       - name: Attempt complete Debug device build with Xcode
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         shell: bash
         run: |
           set -o pipefail
@@ -282,6 +294,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee "$RUNNER_TEMP/SteamMobileNativeBuild.log"
       - name: Package native patched IPA ONLY after successful Xcode build
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -295,12 +308,14 @@ jobs:
           (cd "$RUNNER_TEMP/nativeipa" && zip -qry "$RUNNER_TEMP/native_unrepacked.ipa" Payload)
           python3 SteamMobile/tools/repack_ipa_for_signing.py             "$RUNNER_TEMP/native_unrepacked.ipa"             "$GITHUB_WORKSPACE/SteamMobile_Engine_SM001_unsigned.ipa"             --bundle-id com.steammobile.engine --name "Steam Mobile"
       - name: Prove this is a patched native IPA, not a renamed Madeira release
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python3 SteamMobile/tools/verify_optimized_ipa.py \
             SteamMobile_Engine_SM001_unsigned.ipa --bundle-id com.steammobile.engine
       - name: Upload actually compiled native IPA
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: SteamMobile_Engine_SM001_unsigned
