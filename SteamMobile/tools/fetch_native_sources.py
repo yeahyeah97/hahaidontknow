@@ -26,7 +26,7 @@ def fetch(root, lock):
         if actual != source["commit"]:
             raise ValueError(f"{name}: fetched {actual}, expected {source['commit']}")
         print(f"VERIFIED {name} {actual}", flush=True)
-    for name in ("wine", "dxmt", "fex"):
+    for name in ("wine", "dxmt", "fex", "madeira_dock"):
         entry = lock["repositories"][name]
         recorded = subprocess.check_output(
             ["git", "-C", str(root), "rev-parse", "HEAD:" + entry["path"]], text=True).strip()
