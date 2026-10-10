@@ -134,6 +134,25 @@ jobs:
           rustup target add aarch64-apple-ios
           bash "$RUNNER_TEMP/Madeira/build/rppairing-ios/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobilePairingBuild.log"
           test -s "$RUNNER_TEMP/Madeira/app/Madeira/libmadeira_rppairing.a"
+      - name: Diagnose Xcode Swift compile before incomplete native link
+        timeout-minutes: 12
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          # Diagnostic only: Swift parsing is not type-checking. Run the
+          # genuine Xcode build far enough to reveal Swift / asset errors.
+          # We expect missing Wine/DXMT inputs to prevent the final link.
+          xcodebuild -project "$RUNNER_TEMP/Madeira/app/Madeira.xcodeproj" \
+            -scheme Madeira -configuration Debug -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/SteamMobileDiagnosticDerived" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > "$RUNNER_TEMP/SteamMobileTypecheck.log" 2>&1
+          rc=$?
+          echo "Xcode diagnostic exit code: $rc"
+          grep -E 'error:|warning:|SwiftCompile|SwiftEmitModule|CompileAssetCatalog' "$RUNNER_TEMP/SteamMobileTypecheck.log" | tail -65 || true
+          exit "$rc"
       - name: Require real native build libraries and licensed CRT binaries
         shell: bash
         run: |
@@ -210,6 +229,7 @@ jobs:
           test ! -f "$RUNNER_TEMP/SteamMobileFEXBuild.log" || cp "$RUNNER_TEMP/SteamMobileFEXBuild.log" "$GITHUB_WORKSPACE/SteamMobile_fex_build.log"
           test ! -f "$RUNNER_TEMP/SteamMobileFFmpegBuild.log" || cp "$RUNNER_TEMP/SteamMobileFFmpegBuild.log" "$GITHUB_WORKSPACE/SteamMobile_ffmpeg_build.log"
           test ! -f "$RUNNER_TEMP/SteamMobilePairingBuild.log" || cp "$RUNNER_TEMP/SteamMobilePairingBuild.log" "$GITHUB_WORKSPACE/SteamMobile_pairing_build.log"
+          test ! -f "$RUNNER_TEMP/SteamMobileTypecheck.log" || cp "$RUNNER_TEMP/SteamMobileTypecheck.log" "$GITHUB_WORKSPACE/SteamMobile_typecheck.log"
           echo "See upstream Madeira docs/BUILDING.md: extra native libraries/toolchains and licensed CRT DLLs are required. The baseline IPA does NOT contain SM-001 patches." > SteamMobile_native_build_readme.txt
       - name: Upload diagnostics
         if: failure()
@@ -221,6 +241,7 @@ jobs:
             SteamMobile_fex_build.log
             SteamMobile_ffmpeg_build.log
             SteamMobile_pairing_build.log
+            SteamMobile_typecheck.log
             SteamMobile_native_build_readme.txt
           if-no-files-found: warn
 
