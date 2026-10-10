@@ -179,6 +179,127 @@ def patch_fex_bridge(src):
         "FEX native build provenance marker",
     )
 
+
+def patch_jit_pairing(src):
+    """Register iOS background pairing before launch finishes, not on user tap."""
+    old = """    private init() {}
+
+    private func log(_ line: String) { LogStore.shared.log("[jit-pairing] " + line) }"""
+    new = """    private init() {}
+
+    // Steam Mobile JIT-001: BGTaskScheduler handlers must be registered
+    // during app launch. Doing this when the user taps Start Pairing is too
+    // late on iOS and can make the pairing-code background banner vanish.
+    func registerContinuedProcessingAtLaunch() {
+        if #available(iOS 26.0, *) { registerContinuedProcessing() }
+    }
+
+    private func log(_ line: String) { LogStore.shared.log("[jit-pairing] " + line) }"""
+    src = replace_one(src, old, new, "JIT initial background task registration hook")
+
+    old = """        guard error == DNSServiceErrorType(kDNSServiceErr_NoError), let ref else {
+            advertisingFailed(error)
+            return false
+        }
+        DNSServiceSetDispatchQueue(ref, .main)
+        registration = ref
+        return true"""
+    new = """        guard error == DNSServiceErrorType(kDNSServiceErr_NoError), let ref else {
+            advertisingFailed(error)
+            return false
+        }
+        // Steam Mobile JIT-001: an unhandled failed dispatch-queue binding
+        // previously looked just like successful Bonjour registration.
+        let dispatchError = DNSServiceSetDispatchQueue(ref, .main)
+        guard dispatchError == DNSServiceErrorType(kDNSServiceErr_NoError) else {
+            DNSServiceRefDeallocate(ref)
+            advertisingFailed(dispatchError)
+            return false
+        }
+        registration = ref
+        log("Bonjour pairing advertisement registered")
+        return true"""
+    src = replace_one(src, old, new, "JIT Bonjour registration error handling")
+
+    old = """    @available(iOS 26.0, *)
+    private func submitContinued() {
+        guard let identifier = taskIdentifier else { backgroundLimited = true; return }
+        if registered != identifier {
+            let ok = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
+                guard let task = task as? BGContinuedProcessingTask else { task.setTaskCompleted(success: false); return }
+                MainActor.assumeIsolated { OnDevicePairing.shared.attach(task) }
+            }
+            guard ok else { log("register refused"); backgroundLimited = true; return }
+            registered = identifier
+        }
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Madeira",
+                                                       subtitle: "Settings › Privacy & Security › Developer Mode")"""
+    new = """    @available(iOS 26.0, *)
+    private func registerContinuedProcessing() {
+        guard let identifier = taskIdentifier else {
+            log("background pairing ID missing from signed app Info.plist")
+            backgroundLimited = true
+            return
+        }
+        // The permitted identifier must use the actual post-signing bundle ID.
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              identifier == bundleID + ".pairing.session" else {
+            log("background pairing ID does not match signed bundle identifier")
+            backgroundLimited = true
+            return
+        }
+        if registered == identifier { return }
+        let ok = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
+            guard let task = task as? BGContinuedProcessingTask else { task.setTaskCompleted(success: false); return }
+            MainActor.assumeIsolated { OnDevicePairing.shared.attach(task) }
+        }
+        guard ok else {
+            log("background pairing handler registration refused during app launch")
+            backgroundLimited = true
+            return
+        }
+        registered = identifier
+        log("background pairing handler registered at launch")
+    }
+
+    @available(iOS 26.0, *)
+    private func submitContinued() {
+        guard let identifier = taskIdentifier, registered == identifier else {
+            log("cannot start background PIN banner: pairing handler not registered at launch")
+            backgroundLimited = true
+            return
+        }
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Madeira",
+                                                       subtitle: "Settings › Privacy & Security › Developer Mode")"""
+    src = replace_one(src, old, new, "JIT early-registration vs background request split")
+
+    old = """                if pairing.backgroundLimited {
+                    Text("This installation can only wait about 30 seconds in the background, so go to Settings straight away.")
+                        .font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                cancel"""
+    new = """                if pairing.backgroundLimited {
+                    Text("iOS denied the continued pairing task, so the top code banner may not appear. The app may stop in the background after about 30 seconds. Check that the IPA's bundle/task identifiers match or import a pairing file.")
+                        .font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                Text("If Pair with Madeira is absent: allow Local Network for Steam Mobile in Settings, keep Wi-Fi enabled, restart pairing, and return here if the system never shows a code.")
+                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                cancel"""
+    return replace_one(src, old, new, "JIT pairing troubleshooting on UI")
+
+
+def patch_app_jit_registration(src):
+    old = """        _ = ResolutionChoices.screen
+    }"""
+    new = """        _ = ResolutionChoices.screen
+        // Steam Mobile JIT-001: register iOS pairing's background handler
+        // at application launch, before scenes appear, not on a later tap.
+        MainActor.assumeIsolated {
+            OnDevicePairing.shared.registerContinuedProcessingAtLaunch()
+        }
+    }"""
+    return replace_one(src, old, new, "JIT pairing app launch registration")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--madeira", type=Path, required=True)
@@ -190,7 +311,9 @@ def main():
     targets = [
         ((args.dxmt or (args.madeira / "dxmt")) / "src/d3d9/d3d9_multithread.hpp", patch_dxmt),
         (args.madeira / "app/Madeira/Winios/Winios.m", patch_winios),
-        (args.madeira / "app/Madeira/FEXBridge.mm", patch_fex_bridge)
+        (args.madeira / "app/Madeira/FEXBridge.mm", patch_fex_bridge),
+        (args.madeira / "app/Madeira/JITPairing.swift", patch_jit_pairing),
+        (args.madeira / "app/Madeira/MadeiraApp.swift", patch_app_jit_registration)
     ]
     staged = []
     try:
