@@ -53,6 +53,26 @@ jobs:
           set -euo pipefail
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
+      - name: Integrate Steam Mobile UI and build branded iOS app icon
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 SteamMobile/tools/patch_ui.py --madeira "$RUNNER_TEMP/Madeira"
+          python3 -m venv "$RUNNER_TEMP/SteamMobileIconVenv"
+          source "$RUNNER_TEMP/SteamMobileIconVenv/bin/activate"
+          python -m pip install --disable-pip-version-check pillow
+          python SteamMobile/tools/generate_app_icon.py "$RUNNER_TEMP/Madeira/app/Madeira/Assets.xcassets/AppIcon.appiconset"
+          python - <<'PY'
+          import json, os
+          from PIL import Image
+          root = os.path.join(os.environ["RUNNER_TEMP"], "Madeira/app/Madeira/Assets.xcassets/AppIcon.appiconset")
+          c = json.load(open(os.path.join(root, "Contents.json")))
+          assert c["images"][0]["filename"] == "SteamMobile1024.png"
+          with Image.open(os.path.join(root, "SteamMobile1024.png")) as img:
+              assert img.size == (1024,1024) and img.mode == "RGB"
+          print("Steam Mobile iOS icon + asset catalog PASS")
+          PY
       - name: Parse patched iOS JIT pairing Swift before native linking
         shell: bash
         run: |
@@ -62,7 +82,8 @@ jobs:
           xcrun swiftc -frontend -parse \
             "$RUNNER_TEMP/Madeira/app/Madeira/JITPairing.swift" \
             "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraApp.swift" \
-            "$RUNNER_TEMP/Madeira/app/Madeira/FPSOverlay.swift"
+            "$RUNNER_TEMP/Madeira/app/Madeira/FPSOverlay.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/Library.swift"
       - name: Generate FEX headers and compile native iOS FEXCore
         timeout-minutes: 25
         shell: bash
