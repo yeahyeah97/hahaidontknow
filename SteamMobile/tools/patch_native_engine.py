@@ -35,7 +35,30 @@ def patch_dxmt(src):
     uint32_t expected = 0;
 
     bool status = m_owner.compare_exchange_weak(expected, thread_id, std::memory_order_acquire);"""
-    return replace_one(src, old, new, "DXMT D3D9 recursive fast path")
+
+    src = replace_one(src, old, new, "DXMT D3D9 recursive fast path")
+    # Experimental bounded spin policy. Never change third-party DXMT builds.
+    # Default retains the original 2000-pause behavior. Opting in to a
+    # shorter spin helps test whether DX9 lock contention burns scarce
+    # mobile CPU time, with a way to return to stock behavior.
+    old = """    if (try_lock())
+      return;
+    uint32_t rounds = 0;"""
+    new = """    if (try_lock())
+      return;
+#ifdef DXMT_MADEIRA
+    // Steam Mobile SM-002: optional low-spin setting for contended DX9 calls.
+    // Defaults to original behavior; does not affect uncontended calls.
+    static const uint32_t pause_budget =
+        env::getEnvVar("STEAM_MOBILE_D9_LOW_SPIN") == "1" ? 128u : 2000u;
+#else
+    constexpr uint32_t pause_budget = 2000u;
+#endif
+    uint32_t rounds = 0;"""
+    src = replace_one(src, old, new, "DXMT opt-in contention spin budget")
+    return replace_one(src, "for (uint32_t i = 0; i < 2000; i++) {",
+                       "for (uint32_t i = 0; i < pause_budget; i++) {",
+                       "DXMT adjustable contention spin loop")
 
 def patch_winios(src):
     old = """/* Public C entry points for Swift / UIKit gesture handlers.
