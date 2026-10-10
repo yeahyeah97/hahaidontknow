@@ -1,6 +1,57 @@
 # Steam Mobile — experimental native engine (SM-001)
 
-This is an isolated development workspace in the **steam-mobile-engine-sm001** branch of `beamerwz/iphone`. The existing MilazyKeyboard app on `main` is unchanged. This is **not a compiled IPA**.
+This is an isolated development workspace in the **steam-mobile-engine-sm001** branch of `yeahyeah97/hahaidontknow`. The existing MilazyKeyboard app on `main` is unchanged. This is **not yet a validated compiled optimized IPA**.
+
+
+## SM-002 optimization and build integrity work (experimental)
+
+The Steam Mobile branch adds these **actual native source patches**, which only
+take effect after a successful rebuild of Madeira and its dependencies:
+
+- **DXMT D3D9 recursive-lock fast path:** retained from SM-001. Lock recursion
+  on the owning thread avoids a redundant atomic compare-and-swap.
+- **DXMT low-spin contention experiment:** `STEAM_MOBILE_D9_LOW_SPIN=1` uses
+  128 pause spins per contended round instead of 2000, potentially reducing
+  wasted CPU power on a parked GPU-fence owner. The default stays at upstream's
+  original 2000 spins. This setting is not proven to increase game FPS.
+- **Wine/iOS input:** retained bounded FIFO batching and opt-in per-event
+  tracing; every input stays in order and callbacks happen after unlocking.
+- **FEX JIT allocation logging:** successful allocations no longer incur a
+  synchronous stderr + os_log message by default. Exhaustion/errors are never
+  hidden. `STEAM_MOBILE_JIT_TRACE=1` restores successful-allocation logging.
+- **Build authenticity:** a native FEX bridge marker is linked into the
+  executable; `verify_optimized_ipa.py` rejects an unsigned package without
+  this marker, the JIT extension, the ARM64EC translator and Microsoft VC
+  runtime DLLs. It cannot prove Steam sign-in, JIT authorization or actual FPS.
+
+GitHub CI compiles and stress-tests the real patched DXMT lock on Linux, plus
+checks Wine/FEX source changes, both DX9 contention settings and the package
+rejection guard. Linux host validation is **not** an iPhone runtime test.
+
+The macOS native build needs the true FEX, Wine, DXMT, FFmpeg, JIT-pairing and
+other archives plus the Microsoft VC redistributable under its own license.
+See `BUILD_STATUS.md` and upstream `docs/BUILDING.md`. The upstream
+Wine-server helper specifically requires a pre-existing `libwineserver.a`.
+A clean public checkout cannot currently guarantee a complete native rebuild.
+Do not represent the separate upstream Madeira baseline IPA as SM-002.
+
+### Performance targets vs verified results
+
+The built-in Madeira runtime already exposes a 30/40/60/display-max/RAW
+presentation selection. A 30 FPS symptom may be a game limiter, a configured
+presentation cap, or an emulator CPU/GPU bottleneck; benchmark those separately.
+An iPhone panel supporting 120 Hz cannot *display* 200 unique frames/second.
+No Borderlands 1 >30, Cuphead >200 or 120 FPS claim is made without repeatable
+on-device tests.
+
+### Compatibility and achievements
+
+The patched code does **not** add working EA App, Ubisoft Connect, Epic Online
+Services, Steam achievements, or anti-cheat support. Real launcher compatibility
+requires installer/runtime/network/TLS/process tests in the corresponding Wine
+prefix, and some DRM/kernel drivers will remain unsupported. Steam achievement
+handling must use Valve's authenticated Steam client/Steamworks callbacks and
+the game's own entitlement; no offline fake unlocks are injected.
 
 ## Native-engine changes
 
