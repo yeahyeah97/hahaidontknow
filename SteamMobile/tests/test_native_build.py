@@ -39,6 +39,32 @@ class CleanServerBuild(unittest.TestCase):
         self.assertNotIn('"$OBJ_DIR/main.o"', result)
         self.assertNotIn('"$OBJ_DIR"/*.o', result)
 
+    def test_dxmt_embedded_shader_headers_generated_before_cpp_compile(self):
+        original = '''#!/bin/bash
+echo "=== airconv (C++ 20, needs LLVM headers) ==="
+for cpp in airconv_context.cpp air_type.cpp; do
+    compile_cxx "$DXMT_SRC/airconv/$cpp" "${cpp%.cpp}"
+done
+echo "Failed:$FAILED_FILES"
+echo "See .err files in $OBJ_DIR/"
+# The app links libdxmt_combined.a
+echo "unavailable old archive"
+'''
+        patched = native.patch_dxmt(original)
+        self.assertLess(patched.index("generate embedded airconv Metal shader headers"),
+                        patched.index("=== airconv (C++ 20, needs LLVM headers) ==="))
+        self.assertIn("for name in air_msad air_samplepos air_tessellation; do", patched)
+        self.assertIn("metal -std=metal3.1 --target=air64-apple-macos14.0", patched)
+        self.assertIn('xxd -n "$name" -i "$air" "$hdr"', patched)
+        self.assertIn('test -s "$hdr"', patched)
+        self.assertIn("compiler diagnostics", patched)
+        self.assertIn("xcrun --sdk iphoneos libtool -static", patched)
+        self.assertNotIn("unavailable old archive", patched)
+        import subprocess
+        subprocess.run(["bash", "-n"], input=patched, text=True, check=True)
+        with self.assertRaises(ValueError):
+            native.patch_dxmt(patched)  # fail closed; never patch twice
+
     def test_duplicate_sources_rejected(self):
         with self.assertRaises(ValueError):
             native.server_sources('SOURCES = main.c main.c\n\n')
