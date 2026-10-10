@@ -295,8 +295,14 @@ struct SteamMobileAchievementsTab: View {
             library.start()
             if selectedAppID == 0, let first = library.owned.first {
                 selectedAppID = first.id
-                refresh()
             }
+            // Also recheck when this tab becomes visible after gameplay.
+            refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .steamMobileSessionEnded)) { _ in
+            // Event posted after the game process ends and Madeira's Steam
+            // connection is released. Never run a second account login midgame.
+            refresh()
         }
         .onChange(of: library.owned.count) { _, count in
             if selectedAppID == 0, count > 0, let first = library.owned.first {
