@@ -678,9 +678,6 @@ def patch(src):
                     Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {''',
         '''            VStack(alignment: .leading, spacing: 24) {
                 SteamMobileSteamHomeStatus()
-                SteamMobileLibraryHero(item: model.entries.first(where: { $0.desktop != true })) {
-                    selected = $0
-                }
                 HStack {
                     Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {''',
         "Steam Mobile real library home hero")
@@ -730,5 +727,12 @@ def main():
         print("Steam Mobile SwiftUI anchors verified")
     else:
         target.write_text(result)
+        # Keep the native Valve depot downloader and license/credits untouched,
+        # but ensure the Windows game-download UI uses Steam Mobile branding.
+        games = args.madeira/"app/Madeira/SteamGames.swift"
+        if games.is_file():
+            copy = games.read_text()
+            copy = copy.replace("You can leave Madeira while it downloads:", "You can leave Steam Mobile while it downloads:")
+            games.write_text(copy)
         print("Steam Mobile SwiftUI native library integrated")
 if __name__=="__main__": main()
