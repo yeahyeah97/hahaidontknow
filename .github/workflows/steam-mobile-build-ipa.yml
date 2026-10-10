@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# Only the newest code revision needs a full native iOS build.
+concurrency:
+  group: steam-mobile-native-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native-engine-attempt:
     name: Native engine build attempt (experimental)
@@ -56,7 +61,20 @@ jobs:
           # Generated headers do not exist in the FEX source checkout.
           # Compiling the actual targets generates ConfigValues.inl and
           # ConfigOptions.inl, and their required static libraries.
-          bash "$RUNNER_TEMP/Madeira/build/fex-ios/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          R="$RUNNER_TEMP/Madeira"
+          # Xcode 27 + CMake's iOS cross-compile reports an empty
+          # CMAKE_SYSTEM_PROCESSOR unless specified explicitly.
+          # Match upstream build/fex-ios/build.sh and set arm64 ourselves.
+          cmake -S "$R/FEX" -B "$R/FEX/build-ios" \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF \
+            -DBUILD_FEXCONFIG=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
+            -DENABLE_FEX_ALLOCATOR=OFF -DENABLE_ASSERTIONS=OFF \
+            -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
+            2>&1 | tee "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          bash "$R/build/fex-ios/build.sh" 2>&1 | tee -a "$RUNNER_TEMP/SteamMobileFEXBuild.log"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigValues.inl"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigOptions.inl"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore.a"
