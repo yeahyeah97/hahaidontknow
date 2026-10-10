@@ -160,6 +160,8 @@ struct SteamMobileAchievementsTab: View {
     @State private var achievements: [SteamMobileAchievement] = []
     @State private var inFlight = false
     @State private var error: String?
+    @State private var lastCloudUnlocks: [Int: Set<String>] = [:]
+    @State private var newlyConfirmed: [String] = []
     private var unlockedCount: Int { achievements.filter(\.unlocked).count }
 
     private func refresh() {
@@ -167,11 +169,26 @@ struct SteamMobileAchievementsTab: View {
         let appID = selectedAppID
         inFlight = true
         error = nil
+        newlyConfirmed = []
         achievements = []
         Task { @MainActor in
             defer { inFlight = false }
             do {
-                achievements = try await library.steamMobileAchievements(for: appID)
+                let serverAchievements = try await library.steamMobileAchievements(for: appID)
+                // First read seeds the baseline without noisy "unlock" popups
+                // for trophies earned months ago. Later reads show only
+                // additional achievements actually confirmed by Steam.
+                let confirmed = Set(serverAchievements.filter(\.unlocked).map(\.id))
+                if let baseline = lastCloudUnlocks[appID] {
+                    let fresh = confirmed.subtracting(baseline)
+                    newlyConfirmed = serverAchievements.filter { fresh.contains($0.id) }
+                        .map(\.title)
+                    if !newlyConfirmed.isEmpty {
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
+                }
+                lastCloudUnlocks[appID] = confirmed
+                achievements = serverAchievements
             } catch {
                 self.error = error.localizedDescription
             }
@@ -219,6 +236,11 @@ struct SteamMobileAchievementsTab: View {
                     }
                     if let error {
                         Text(error).font(.footnote).foregroundStyle(.orange)
+                    }
+                    if !newlyConfirmed.isEmpty {
+                        Label("Newly confirmed on Steam: " + newlyConfirmed.joined(separator: ", "),
+                              systemImage: "trophy.fill")
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(.green)
                     }
                 }
                 SteamMobileCard {
@@ -276,8 +298,16 @@ struct SteamMobileAchievementsTab: View {
                 refresh()
             }
         }
+        .onChange(of: library.owned.count) { _, count in
+            if selectedAppID == 0, count > 0, let first = library.owned.first {
+                selectedAppID = first.id
+                refresh()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in
             achievements = []
+            newlyConfirmed = []
+            lastCloudUnlocks = [:]
             error = nil
             library.start()
         }
