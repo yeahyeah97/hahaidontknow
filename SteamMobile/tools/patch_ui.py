@@ -155,44 +155,131 @@ struct SteamMobilePerformanceTab: View {
 
 struct SteamMobileAchievementsTab: View {
     var openSteamLibrary: () -> Void
-    @State private var signedIn = SteamSignIn.isSignedIn
+    @ObservedObject private var library = SteamOwnedLibrary.shared
+    @State private var selectedAppID = 0
+    @State private var achievements: [SteamMobileAchievement] = []
+    @State private var inFlight = false
+    @State private var error: String?
+    private var unlockedCount: Int { achievements.filter(\.unlocked).count }
+
+    private func refresh() {
+        guard selectedAppID > 0, !inFlight else { return }
+        let appID = selectedAppID
+        inFlight = true
+        error = nil
+        achievements = []
+        Task { @MainActor in
+            defer { inFlight = false }
+            do {
+                achievements = try await library.steamMobileAchievements(for: appID)
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
-                Label("ACHIEVEMENTS", systemImage: "trophy.fill")
+                Label("REAL STEAM ACHIEVEMENTS", systemImage: "trophy.fill")
                     .font(.title2.weight(.black)).foregroundStyle(.cyan)
                 SteamMobileCard {
                     HStack(spacing: 12) {
-                        Image(systemName: signedIn ? "checkmark.seal.fill" : "person.crop.circle.badge.questionmark")
-                            .font(.largeTitle).foregroundStyle(signedIn ? .green : .orange)
+                        Image(systemName: SteamSignIn.isSignedIn ? "checkmark.seal.fill" : "person.crop.circle.badge.questionmark")
+                            .font(.largeTitle)
+                            .foregroundStyle(SteamSignIn.isSignedIn ? .green : .orange)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(signedIn ? "Steam account connected" : "Steam sign-in required")
+                            Text(SteamSignIn.isSignedIn ? "Steam account connected" : "Steam sign-in required")
                                 .font(.headline).foregroundStyle(.white)
-                            Text("Authentication is handled by Madeira's real Steam account session.")
+                            Text("Data requested from Valve through your authenticated Steam CM session.")
                                 .font(.footnote).foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                    Button("Open Steam library", action: openSteamLibrary)
+                        .buttonStyle(.bordered)
+                }
+                SteamMobileCard {
+                    Label("Select a Steam game", systemImage: "gamecontroller.fill")
+                        .font(.headline).foregroundStyle(.white)
+                    Picker("Steam game", selection: $selectedAppID) {
+                        Text("Choose a game").tag(0)
+                        ForEach(Array(library.owned.prefix(150))) { game in
+                            Text(game.name).tag(game.id)
+                        }
+                    }
+                    .tint(.cyan)
+                    .onChange(of: selectedAppID) { _, _ in refresh() }
+                    HStack {
+                        Button { refresh() } label: {
+                            Label("Refresh from Steam", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!SteamSignIn.isSignedIn || selectedAppID == 0 || inFlight)
+                        if inFlight { ProgressView().tint(.cyan) }
+                    }
+                    if let error {
+                        Text(error).font(.footnote).foregroundStyle(.orange)
+                    }
+                }
+                SteamMobileCard {
+                    Label("Account achievement progress", systemImage: "chart.bar.fill")
+                        .font(.headline).foregroundStyle(.white)
+                    if achievements.isEmpty {
+                        Text(inFlight ? "Loading actual achievement data…" :
+                             "Choose a game and refresh to load achievements from Steam.")
+                            .font(.footnote).foregroundStyle(.white.opacity(0.74))
+                    } else {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("\(unlockedCount) / \(achievements.count)")
+                                .font(.largeTitle.weight(.black)).foregroundStyle(.cyan)
+                            Text("earned on Steam").font(.subheadline).foregroundStyle(.white.opacity(0.7))
+                        }
+                        ProgressView(value: Double(unlockedCount),
+                                     total: Double(max(1, achievements.count)))
+                            .tint(.cyan)
+                        ForEach(achievements) { item in
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: item.unlocked ? "trophy.fill" : "lock.fill")
+                                    .foregroundStyle(item.unlocked ? .yellow : .gray)
+                                    .frame(width: 26)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.hidden && !item.unlocked ? "Hidden achievement" : item.title)
+                                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                                    if !item.detail.isEmpty && (!item.hidden || item.unlocked) {
+                                        Text(item.detail).font(.caption)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                    if item.unlockTimestamp > 0 {
+                                        Text("Earned " + Date(timeIntervalSince1970:
+                                            TimeInterval(item.unlockTimestamp)).formatted(date: .abbreviated, time: .omitted))
+                                            .font(.caption2).foregroundStyle(.green)
+                                    }
+                                }
+                                Spacer()
+                            }.padding(.vertical, 5)
                         }
                     }
                 }
                 SteamMobileCard {
-                    Label("Authenticated achievement tracking", systemImage: "lock.shield")
+                    Label("While playing", systemImage: "info.circle")
                         .font(.headline).foregroundStyle(.white)
-                    Text("Not implemented yet. Steamworks achievements require real Steam client/user callbacks; neither local fake unlocks nor fabricated trophies will appear here.")
-                        .font(.subheadline).foregroundStyle(.white.opacity(0.85))
-                    Button("Open your game library", action: openSteamLibrary)
-                        .buttonStyle(.borderedProminent)
-                }
-                SteamMobileCard {
-                    Label("Planned integration", systemImage: "wrench.and.screwdriver.fill")
-                        .font(.headline).foregroundStyle(.white)
-                    Text("Account-backed achievement catalog, game-specific progress and unlock events will appear only after validated client integration.")
-                        .font(.footnote).foregroundStyle(.white.opacity(0.7))
+                    Text("Madeira hands your Steam login to Valve's game client during gameplay. Account-stat refresh resumes after the game closes; we never open a competing Steam session or claim that local files were confirmed as Steam unlocks.")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.75))
                 }
             }.padding(16)
         }
         .background(SteamMobilePalette.bg.ignoresSafeArea())
-        .onAppear { signedIn = SteamSignIn.isSignedIn }
+        .onAppear {
+            library.start()
+            if selectedAppID == 0, let first = library.owned.first {
+                selectedAppID = first.id
+                refresh()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in
-            signedIn = SteamSignIn.isSignedIn
+            achievements = []
+            error = nil
+            library.start()
         }
     }
 }
