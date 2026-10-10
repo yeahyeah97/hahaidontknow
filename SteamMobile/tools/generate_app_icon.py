@@ -48,6 +48,12 @@ def icon(size=1024):
 def main():
     root=Path(sys.argv[1]) if len(sys.argv)>1 else Path("app/Madeira/Assets.xcassets/AppIcon.appiconset")
     root.mkdir(parents=True,exist_ok=True)
+    # The upstream source already contains AppIcon-1024.png. If left in
+    # the catalog after rewriting Contents.json it becomes an unassigned
+    # image and Xcode warns on every build. This is only the temp clone.
+    for stale in root.glob("*.png"):
+        if stale.name != "SteamMobile1024.png":
+            stale.unlink()
     image=icon()
     image.save(root/"SteamMobile1024.png",optimize=True)
     (root/"Contents.json").write_text(json.dumps({
