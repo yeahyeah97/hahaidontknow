@@ -1,16 +1,68 @@
 #!/usr/bin/env python3
-"""Create Steam Mobile's original dark-blue iOS home-screen icon.
+"""Render the user's personal Steam/Apple icon from versioned vector geometry.
 
-An independent source-drawn illustration using Pillow; no copyrighted Steam
-or Apple artwork is redistributed as a binary asset. The white geometry is a
-Steam-inspired mechanical linkage with a small Apple-shaped badge. The artwork
-is intended only as user-requested personal app branding.
+See assets/brand/README.md for source provenance and trademark status.
 """
 from pathlib import Path
 import json
 import math
+import re
 import sys
-from PIL import Image, ImageDraw, ImageFilter
+import xml.etree.ElementTree as ET
+from PIL import Image, ImageDraw
+
+
+def brand_path(name, x, y, size):
+    """Render the M/L/H/V/C/S/Z subset used by these pinned SVGs via Pillow.
+
+    Keeping the source paths avoids hand-drawn approximations and extra native
+    rasterizer dependencies in CI. Unsupported path commands fail closed.
+    """
+    root = ET.parse(Path(__file__).resolve().parents[1] / 'assets/brand' / (name + '.svg')).getroot()
+    if root.attrib['viewBox'] != '0 0 24 24':
+        raise ValueError('Unexpected vector coordinate system')
+    path = ImageDraw.Outline()
+    def pixels(point): return (x + point[0] * size / 24, y + point[1] * size / 24)
+    for shape in root.findall('{http://www.w3.org/2000/svg}path'):
+        tokens = re.findall(r'[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?', shape.attrib['d'])
+        pos = 0; command = None; current = (0., 0.); origin = current; previous = ''; control = None
+        while pos < len(tokens):
+            if tokens[pos].isalpha():
+                command = tokens[pos]; pos += 1
+            if command is None:
+                raise ValueError('Missing SVG command')
+            kind = command.upper()
+            if kind == 'Z':
+                path.close(); current = origin; control = None; previous = kind; command = None
+                continue
+            counts = {'M': 2, 'L': 2, 'H': 1, 'V': 1, 'C': 6, 'S': 4}
+            if kind not in counts:
+                raise ValueError(f'Unsupported SVG command: {command}')
+            count = counts[kind]
+            values = list(map(float, tokens[pos:pos + count])); pos += count
+            if len(values) != count:
+                raise ValueError('Truncated SVG command')
+            relative = command.islower()
+            def point(a, b):
+                return (a + current[0], b + current[1]) if relative else (a, b)
+            if kind == 'H': end = (values[0] + (current[0] if relative else 0), current[1])
+            elif kind == 'V': end = (current[0], values[0] + (current[1] if relative else 0))
+            else: end = point(*values[-2:])
+            if kind == 'M':
+                path.move(*pixels(end)); origin = end
+                command = 'l' if relative else 'L'
+            elif kind in ('L', 'H', 'V'): path.line(*pixels(end))
+            else:
+                first = point(*values[:2]) if kind == 'C' else (
+                    (2 * current[0] - control[0], 2 * current[1] - control[1])
+                    if previous in ('C', 'S') and control is not None else current)
+                second = point(*values[-4:-2])
+                path.curve(*pixels(first), *pixels(second), *pixels(end))
+                control = second
+            if kind not in ('C', 'S'): control = None
+            current = end; previous = kind
+        path.close()
+    return path
 
 def icon(size=1024):
     scale = 2
@@ -24,25 +76,12 @@ def icon(size=1024):
             p[x,y] = (int(3+4*glow), int(9+30*glow), int(27+94*glow))
     draw = ImageDraw.Draw(im)
     def c(v):return round(v*w)
-    def ell(box,fill,outline=None,width=1):draw.ellipse(tuple(c(x) for x in box),fill=fill,outline=outline,width=c(width))
     # Soft neon bezel and a square iOS-safe margin (iOS masks its app icons).
     draw.rounded_rectangle((c(.045),c(.045),c(.955),c(.955)),radius=c(.19),outline="#006cf4",width=c(.008))
     draw.rounded_rectangle((c(.059),c(.059),c(.941),c(.941)),radius=c(.18),outline="#1d88ff",width=c(.002))
     white = "#f8fbff"
-    # Steam-inspired linkage (independent vector redraw, not a packaged logo asset).
-    draw.line([(c(-.07),c(.33)),(c(.29),c(.54)),(c(.61),c(.34))],fill=white,width=c(.125),joint="curve")
-    ell((.49,.16,.84,.51),white)
-    ell((.54,.21,.79,.46),"#092047")
-    ell((.59,.26,.74,.41),white)
-    ell((.18,.47,.43,.72),white)
-    ell((.23,.52,.38,.67),"#092047")
-    # Tiny Apple-shaped badge in lower-right: rounded silhouette + detached leaf.
-    apple=[(.745,.755),(.721,.719),(.704,.671),(.711,.628),(.733,.601),
-           (.758,.595),(.779,.605),(.807,.594),(.835,.602),(.850,.628),
-           (.842,.672),(.824,.724),(.801,.754),(.785,.751),(.770,.746)]
-    draw.polygon([(c(x),c(y)) for x,y in apple],fill=white)
-    draw.ellipse((c(.786),c(.566),c(.818),c(.590)),fill=white)
-    draw.polygon([(c(.814),c(.607)),(c(.848),c(.603)),(c(.847),c(.641)),(c(.822),c(.636))],fill="#082145")
+    draw.shape(brand_path('steam', c(.14), c(.13), c(.69)), fill=white)
+    draw.shape(brand_path('apple', c(.745), c(.735), c(.16)), fill=white)
     return im.resize((size,size),Image.Resampling.LANCZOS)
 
 def main():

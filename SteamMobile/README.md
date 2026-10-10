@@ -30,9 +30,11 @@ rejection guard. Linux host validation is **not** an iPhone runtime test.
 
 The macOS native build needs the true FEX, Wine, DXMT, FFmpeg, JIT-pairing and
 other archives plus the Microsoft VC redistributable under its own license.
-See `BUILD_STATUS.md` and upstream `docs/BUILDING.md`. The upstream
-Wine-server helper specifically requires a pre-existing `libwineserver.a`.
-A clean public checkout cannot currently guarantee a complete native rebuild.
+See `BUILD_STATUS.md` and `docs/NATIVE_REBUILD.md`. This branch replaces the
+upstream Wine-server helper's pre-existing archive requirement with a complete
+48-object source build. All three Wine archives have passed CI; full LLVM/DXMT
+and final app linking remain under validation. Runtime DLLs supplied by the user
+are hash-pinned for local assembly, with no DLL bytes committed to Git.
 Do not represent the separate upstream Madeira baseline IPA as SM-002.
 
 ### Performance targets vs verified results
@@ -80,7 +82,11 @@ Compare an identical 60-second mission across builds and repeats, with identical
 
 Madeira's `docs/BUILDING.md` documents missing unpushed submodule commits and extra native toolchains, licensed binaries, Xcode dependencies and signing. A public clean checkout currently does not fully reproduce the maintainer's working application. This GitHub repo already hosts a different iOS project; simply invoking its existing `build-milazy.yml` cannot produce a Madeira-based Steam Mobile IPA.
 
-**No native Steam achievement implementation yet.** Correct Steam achievements require verified Steamworks state/events through Valve's original client and synchronization. The performance patch neither implements nor fakes them.
+**Steam achievements:** an authenticated read-only CM reader and account-scoped notification history are implemented but require account/device verification. Gameplay unlock writes and offline reconciliation are not implemented. See `docs/GAMENATIVE_PORT.md`.
+
+**Measurements:** Performance Lab capture and comparison tooling are described in `docs/DEVICE_BENCHMARKS.md`; no device results are claimed.
+
+**Icon:** the generator now uses versioned Steam and Apple vector paths for the requested personal design. See `assets/brand/README.md` for provenance and the unresolved public-branding permission requirement.
 
 Upstream references:
 - Madeira main pinned: `48f976429c189f8396e23d251d8a82f43c705922`
