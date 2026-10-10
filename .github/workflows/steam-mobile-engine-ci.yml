@@ -5,6 +5,11 @@ on:
     paths:
       - 'SteamMobile/**'
       - '.github/workflows/steam-mobile-engine-ci.yml'
+  pull_request:
+    branches: [steam-mobile-engine-sm001]
+    paths:
+      - 'SteamMobile/**'
+      - '.github/workflows/steam-mobile-engine-ci.yml'
   workflow_dispatch:
 jobs:
   dx9-engine:
