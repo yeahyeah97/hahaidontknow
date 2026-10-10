@@ -35,6 +35,42 @@ private struct SteamMobileCard<Content: View>: View {
     }
 }
 
+struct SteamMobileSteamHomeStatus: View {
+    @ObservedObject private var steam = SteamOwnedLibrary.shared
+    @State private var signIn = false
+    var body: some View {
+        SteamMobileCard {
+            HStack(spacing: 10) {
+                Image(systemName: "gamecontroller.fill").foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MY STEAM GAMES").font(.title3.bold()).foregroundStyle(.white)
+                    Text(steam.signedIn
+                         ? "\(steam.owned.count) owned Windows games • \(steam.downloads.count) downloads"
+                         : "Connect Steam to see every game you own")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if steam.refreshing { ProgressView() }
+            }
+            HStack(spacing: 10) {
+                if steam.signedIn {
+                    Button("Sync library") {
+                        Task { await steam.refreshLibrary(interactive: true) }
+                    }.disabled(steam.refreshing)
+                        .buttonStyle(.borderedProminent)
+                    Spacer()
+                    Label("Tap a game below to install", systemImage: "arrow.down.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Button("Sign in to Steam") { signIn = true }.buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .onAppear { steam.start() }
+        .sheet(isPresented: $signIn) { SteamSignInView() }
+    }
+}
+
 struct SteamMobileLibraryHero: View {
     let item: LibraryEntry?
     var open: (LibraryEntry) -> Void
@@ -57,7 +93,7 @@ struct SteamMobileLibraryHero: View {
                 .lineLimit(2)
             Text(item == nil
                  ? "Import your Windows game or sign in with Steam to build your library."
-                 : "Continue your game with Madeira's native DXMT, Wine and FEX runtime.")
+                 : "Continue your game with Steam Mobile's native DXMT, Wine and FEX runtime.")
                 .font(.footnote).foregroundStyle(.white.opacity(0.78))
             if let item {
                 Button { open(item) } label: {
@@ -298,7 +334,7 @@ struct SteamMobileAchievementsTab: View {
                 SteamMobileCard {
                     Label("While playing", systemImage: "info.circle")
                         .font(.headline).foregroundStyle(.white)
-                    Text("Madeira hands your Steam login to Valve's game client during gameplay. Account-stat refresh resumes after the game closes; we never open a competing Steam session or claim that local files were confirmed as Steam unlocks.")
+                    Text("Steam Mobile passes your Steam login to Valve's game client during gameplay. Account-stat refresh resumes after the game closes; we never open a competing Steam session or claim that local files were confirmed as Steam unlocks.")
                         .font(.footnote).foregroundStyle(.white.opacity(0.75))
                 }
             }.padding(16)
@@ -351,7 +387,7 @@ struct SteamMobileLaunchersTab: View {
                 SteamMobileCard {
                     Label("Steam", systemImage: "gamecontroller.fill")
                         .font(.title3.weight(.semibold)).foregroundStyle(.white)
-                    Text("Your real Steam account and Madeira Dock.")
+                    Text("Your real Steam account and the native Steam game launcher.")
                         .font(.footnote).foregroundStyle(.white.opacity(0.75))
                     HStack {
                         Button("Sign in") { showSteam = true }.buttonStyle(.borderedProminent)
@@ -448,12 +484,35 @@ def patch(src):
                 HStack {
                     Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {''',
         '''            VStack(alignment: .leading, spacing: 24) {
+                SteamMobileSteamHomeStatus()
                 SteamMobileLibraryHero(item: model.entries.first(where: { $0.desktop != true })) {
                     selected = $0
                 }
                 HStack {
                     Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {''',
         "Steam Mobile real library home hero")
+    # The authenticated, downloadable Steam collection belongs on Home.
+    # Don't put uninstalled games below the local EXE import collection.
+    src = once(src,
+        'let steamFirst = MadeiraDock.enabled && SteamGamesSection.hasInstalled',
+        'let steamFirst = MadeiraDock.enabled',
+        "Steam first on home")
+    src = once(src,
+        'part: .installed, open: { selected = $0 })',
+        'part: .all, open: { selected = $0 })',
+        "Show installed and uninstalled Steam games together")
+    src = once(src,
+        '''                    if MadeiraDock.enabled {
+                        SteamGamesSection(search: search, layout: layout, sort: sort, width: viewport.size.width,
+                                          part: steamFirst ? .notInstalled : .all, open: { selected = $0 })
+                    }''',
+        '''                    if MadeiraDock.enabled && !steamFirst {
+                        SteamGamesSection(search: search, layout: layout, sort: sort, width: viewport.size.width,
+                                          part: .all, open: { selected = $0 })
+                    }''',
+        "Do not duplicate Steam account catalog")
+    src = src.replace("Copy a game's folder into Madeira › wine › drive_c", "Copy a game's folder into Steam Mobile › wine › drive_c")
+    src = src.replace("Restart Madeira to start another game", "Restart Steam Mobile to start another game")
     src = once(src,
         '''        .onReceive(controller.commands) { command in
             if selected == nil, !browser, !onboarding.presented, command == "tab" { switchTab(to: 1 - tab) }
