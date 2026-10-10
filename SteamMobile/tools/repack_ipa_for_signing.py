@@ -41,6 +41,24 @@ def repack(inp: Path, out: Path, bundle_id: str, display_name: str) -> None:
                     plist["CFBundleIdentifier"] = bundle_id
                     plist["CFBundleDisplayName"] = display_name
                     plist["CFBundleName"] = "SteamMobile"
+                    # BackgroundTasks identifiers must match the *signed* app
+                    # bundle identifier. Keeping upstream Madeira's prefix
+                    # makes pairing's continued-processing task fail after
+                    # re-signing under com.steammobile.*, hiding the PIN banner.
+                    identifiers = plist.get("BGTaskSchedulerPermittedIdentifiers", [])
+                    if not isinstance(identifiers, list):
+                        raise ValueError("Invalid BGTaskSchedulerPermittedIdentifiers")
+                    needed = ("download.*", "pairing.*")
+                    for suffix in needed:
+                        if not any(isinstance(v, str) and v.endswith("." + suffix) for v in identifiers):
+                            raise ValueError(f"Missing iOS background task identifier: {suffix}")
+                    plist["BGTaskSchedulerPermittedIdentifiers"] = [
+                        bundle_id + "." + suffix for suffix in needed
+                    ]
+                    if "_remotepairing-pairable-host._tcp" not in plist.get("NSBonjourServices", []):
+                        raise ValueError("iOS pairing Bonjour service is missing")
+                    if not plist.get("NSLocalNetworkUsageDescription"):
+                        raise ValueError("Local Network permission explanation is missing")
                 else:
                     plist["CFBundleIdentifier"] = bundle_id + ".JITHelper"
                 modified = plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
@@ -58,6 +76,10 @@ def repack(inp: Path, out: Path, bundle_id: str, display_name: str) -> None:
         main_id = plistlib.loads(result.read(main))["CFBundleIdentifier"]
         helper_id = plistlib.loads(result.read(helper))["CFBundleIdentifier"]
         assert helper_id == main_id + ".JITHelper"
+        parsed = plistlib.loads(result.read(main))
+        assert parsed["BGTaskSchedulerPermittedIdentifiers"] == [
+            main_id + ".download.*", main_id + ".pairing.*"
+        ]
         assert not any("/_CodeSignature/" in n for n in result.namelist())
         assert result.testzip() is None
     print(f"IPA package verified ({out.stat().st_size} bytes); requires iOS signing")
