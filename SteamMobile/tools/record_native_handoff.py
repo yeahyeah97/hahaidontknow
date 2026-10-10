@@ -7,7 +7,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from inspect_binary import device_executable
+from inspect_binary import device_executable, windows_exe
 from verify_optimized_ipa import MARKER
 
 
@@ -33,6 +33,16 @@ def record(directory, derived):
                 binaries[member] = hashlib.sha256(data).hexdigest()
             if member.startswith('Madeira.app/Madeira') and MARKER not in data:
                 raise ValueError('Native patch marker missing from linked app')
+    # The app's real Steam ownership/depot views are feature-gated on Dock host
+    # presence. Without this executable a linked IPA falsely appears successful
+    # yet silently hides Steam library and downloads at runtime.
+    with zipfile.ZipFile(archive) as source:
+        dock = 'Madeira.app/arm64ec-windows/dockhost.exe'
+        notices = 'Madeira.app/arm64ec-windows/dock-notices.txt'
+        windows_exe(source.read(dock))
+        if len(source.read(notices)) < 100:
+            raise ValueError('Dock source/license notices missing')
+        binaries[dock] = hashlib.sha256(source.read(dock)).hexdigest()
     maps = {}
     for source in derived.rglob('*LinkMap*'):
         if source.is_file():
