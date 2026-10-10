@@ -241,7 +241,20 @@ def patch(madeira: Path) -> None:
     m = once(m, '    private let session = SteamSession()',
              STEAM_METHOD + '\n    private let session = SteamSession()',
              "Steam account stats session")
-    m += '\n' + STEAM_READ
+    m = once(
+        m,
+        'Task { try? await Task.sleep(nanoseconds: 5_000_000_000); await self.refreshPlaytime() }',
+        'Task { try? await Task.sleep(nanoseconds: 5_000_000_000); '
+        'await self.refreshPlaytime(); '
+        'NotificationCenter.default.post(name: .steamMobileSessionEnded, object: nil) }',
+        "Steam achievement cloud refresh when game session ends"
+    )
+    m += '\n' + STEAM_READ + '''
+// GameNative-inspired post-session cloud verification; NOT a fake unlock event.
+extension Notification.Name {
+    static let steamMobileSessionEnded = Notification.Name("SteamMobileSessionEnded")
+}
+'''
     proto.write_text(p)
     model.write_text(m)
 
