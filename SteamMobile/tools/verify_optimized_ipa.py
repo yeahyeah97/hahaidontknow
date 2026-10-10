@@ -41,6 +41,17 @@ def validate(path: Path, bundle_id: str = "com.steammobile.engine") -> dict:
             raise InvalidOptimizedIPA("Main app bundle identifier does not match optimized engine ID")
         if helper.get("CFBundleIdentifier") != bundle_id + ".JITHelper":
             raise InvalidOptimizedIPA("JIT extension bundle identifier mismatch")
+        # A renamed IPA without these runtime-matched background identifiers
+        # can install and run yet cannot display the on-device pairing-code
+        # continued task. Treat that as incomplete, not release ready.
+        if metadata.get("BGTaskSchedulerPermittedIdentifiers") != [
+            bundle_id + ".download.*", bundle_id + ".pairing.*"
+        ]:
+            raise InvalidOptimizedIPA("Pairing/download background IDs do not match signed app ID")
+        if "_remotepairing-pairable-host._tcp" not in metadata.get("NSBonjourServices", []):
+            raise InvalidOptimizedIPA("Pairing Bonjour service missing")
+        if not metadata.get("NSLocalNetworkUsageDescription"):
+            raise InvalidOptimizedIPA("Local Network usage declaration missing")
         main = z.read(required[1])
         jit = z.read(required[3])
         if len(main) < 4096 or main[:4] not in MACHO_MAGIC:
