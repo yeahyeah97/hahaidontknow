@@ -94,8 +94,7 @@ for name in air_msad air_samplepos air_tessellation; do
     air="$BUILD_DIR/shader-headers/$name.air"
     hdr="$BUILD_DIR/shader-headers/$name.h"
     test -s "$src"
-    xcrun -sdk macosx metal -std=metal3.1 --target=air64-apple-macos14.0 \\
-        -o "$air" -c "$src"
+    xcrun -sdk macosx metal -std=metal3.1 --target=air64-apple-macos14.0 -o "$air" -c "$src"
     test -s "$air"
     xxd -n "$name" -i "$air" "$hdr"
     test -s "$hdr"
