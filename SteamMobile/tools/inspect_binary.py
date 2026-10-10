@@ -94,3 +94,31 @@ def windows_dll(data, machines=(0x8664,)):
         executable |= bool(raw_size and characteristics & 0x20000000)
     if not executable:
         raise ValueError("DLL contains no executable section")
+
+
+def windows_exe(data):
+    """Require an authentic-looking Windows x86/x64 PE executable (not a DLL).
+
+    Structural check only: publisher signature, behaviour and provenance need
+    separate verification. Used for our pinned-source Dock host.
+    """
+    if len(data) < 4096 or data[:2] != b"MZ":
+        raise ValueError("Expected nonempty Windows executable")
+    pe = struct.unpack_from("<I", data, 60)[0]
+    if pe < 64 or pe + 24 > len(data) or data[pe:pe + 4] != bytes([80, 69, 0, 0]):
+        raise ValueError("Invalid PE executable signature")
+    machine, sections = struct.unpack_from("<HH", data, pe + 4)
+    opt_size, flags = struct.unpack_from("<HH", data, pe + 20)
+    if machine not in (0x14c, 0x8664) or not flags & 0x0002 or flags & 0x2000:
+        raise ValueError("Expected x86/x64 PE executable, not DLL")
+    opt = pe + 24
+    if not 1 <= sections <= 96 or opt_size < 96 or opt + opt_size > len(data):
+        raise ValueError("Invalid PE executable headers")
+    if struct.unpack_from("<H", data, opt)[0] not in (0x10B, 0x20B):
+        raise ValueError("Invalid PE executable optional header")
+    table = opt + opt_size
+    if table + sections * 40 > len(data):
+        raise ValueError("Truncated PE executable section table")
+    if not any(struct.unpack_from("<I", data, table + i * 40 + 36)[0] & 0x20000000
+               for i in range(sections)):
+        raise ValueError("Executable has no code sections")
