@@ -85,6 +85,24 @@ jobs:
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigOptions.inl"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore.a"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
+      - name: Build LGPL FFmpeg iOS static libraries from verified upstream tarball
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Upstream script verifies SHA256 and configures only LGPL codecs.
+          bash "$RUNNER_TEMP/Madeira/build/ffmpeg/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobileFFmpegBuild.log"
+          for lib in avformat avcodec swresample avutil; do
+            test -s "$RUNNER_TEMP/Madeira/app/Madeira/lib${lib}.a"
+          done
+      - name: Build real Rust JIT pairing support for iPhone ARM64
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-ios
+          bash "$RUNNER_TEMP/Madeira/build/rppairing-ios/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobilePairingBuild.log"
+          test -s "$RUNNER_TEMP/Madeira/app/Madeira/libmadeira_rppairing.a"
       - name: Require real native build libraries and licensed CRT binaries
         shell: bash
         run: |
@@ -159,6 +177,8 @@ jobs:
         run: |
           test ! -f "$RUNNER_TEMP/SteamMobileNativeBuild.log" || cp "$RUNNER_TEMP/SteamMobileNativeBuild.log" "$GITHUB_WORKSPACE/SteamMobile_native_build.log"
           test ! -f "$RUNNER_TEMP/SteamMobileFEXBuild.log" || cp "$RUNNER_TEMP/SteamMobileFEXBuild.log" "$GITHUB_WORKSPACE/SteamMobile_fex_build.log"
+          test ! -f "$RUNNER_TEMP/SteamMobileFFmpegBuild.log" || cp "$RUNNER_TEMP/SteamMobileFFmpegBuild.log" "$GITHUB_WORKSPACE/SteamMobile_ffmpeg_build.log"
+          test ! -f "$RUNNER_TEMP/SteamMobilePairingBuild.log" || cp "$RUNNER_TEMP/SteamMobilePairingBuild.log" "$GITHUB_WORKSPACE/SteamMobile_pairing_build.log"
           echo "See upstream Madeira docs/BUILDING.md: extra native libraries/toolchains and licensed CRT DLLs are required. The baseline IPA does NOT contain SM-001 patches." > SteamMobile_native_build_readme.txt
       - name: Upload diagnostics
         if: failure()
@@ -168,6 +188,8 @@ jobs:
           path: |
             SteamMobile_native_build.log
             SteamMobile_fex_build.log
+            SteamMobile_ffmpeg_build.log
+            SteamMobile_pairing_build.log
             SteamMobile_native_build_readme.txt
           if-no-files-found: warn
 
