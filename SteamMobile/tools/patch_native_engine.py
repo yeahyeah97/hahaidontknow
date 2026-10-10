@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Steam Mobile SM-001: fail-closed native DX9 / iOS Wine engine patcher.
+"""Steam Mobile SM-001/2: fail-closed DXMT / Wine / FEX engine patcher.
 
 Does not alter game INI files, Steam state, or saved data.
 """
@@ -128,6 +128,25 @@ static int winios_trace_input(void) {
     return drained;"""
     return replace_one(src, old, new, "Winios input FIFO batching")
 
+
+def patch_fex_bridge(src):
+    """Reduce synchronous JIT-allocation logs without suppressing failures.
+
+    Allocation success can be frequent during startup and JIT activity. Keep
+    exhaustion/errors visible; the existing full trace is opt-in for debugging.
+    """
+    old = '    fex_log("JIT pool alloc: %zu bytes at RX=%p (offset %zu/%zu)", size, rx_ptr, offset + size, g_jit_pool_size);'
+    new = """    // Steam Mobile SM-002: no synchronous os_log + stderr per successful JIT allocation.
+    // All allocation failures remain unconditionally logged above.
+    // Restore full logs explicitly using STEAM_MOBILE_JIT_TRACE=1.
+    static const bool trace_allocations = [] {
+        const char *v = getenv("STEAM_MOBILE_JIT_TRACE");
+        return v && v[0] == '1' && v[1] == '\\0';
+    }();
+    if (trace_allocations)
+        fex_log("JIT pool alloc: %zu bytes at RX=%p (offset %zu/%zu)", size, rx_ptr, offset + size, g_jit_pool_size);"""
+    return replace_one(src, old, new, "FEX success-path allocation log gate")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--madeira", type=Path, required=True)
@@ -138,7 +157,8 @@ def main():
     args = ap.parse_args()
     targets = [
         ((args.dxmt or (args.madeira / "dxmt")) / "src/d3d9/d3d9_multithread.hpp", patch_dxmt),
-        (args.madeira / "app/Madeira/Winios/Winios.m", patch_winios)
+        (args.madeira / "app/Madeira/Winios/Winios.m", patch_winios),
+        (args.madeira / "app/Madeira/FEXBridge.mm", patch_fex_bridge)
     ]
     staged = []
     try:
