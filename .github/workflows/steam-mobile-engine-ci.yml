@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Validate clean native build plans
+        run: python3 SteamMobile/tests/test_native_build.py
       - name: Fetch pinned Madeira and DXMT engine sources
         shell: bash
         run: |

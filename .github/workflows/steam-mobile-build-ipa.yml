@@ -10,16 +10,16 @@ on:
 permissions:
   contents: read
 
-# Only the newest code revision needs a full native iOS build.
+# Keep a running native build and its diagnostics when a follow-up is pushed.
 concurrency:
   group: steam-mobile-native-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   native-engine-attempt:
     name: Native engine build attempt (experimental)
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: Verify Xcode environment
@@ -35,18 +35,14 @@ jobs:
           set -euo pipefail
           xcodebuild -downloadComponent MetalToolchain
           xcrun --find metal
-      - name: Fetch Madeira source and current DXMT implementation
+      - name: Fetch exact Madeira, Wine, DXMT, FEX, LLVM and FreeType revisions
         shell: bash
         run: |
           set -euo pipefail
-          git clone --quiet --depth 1 --branch main https://github.com/willfaust/Madeira.git "$RUNNER_TEMP/Madeira"
-          git clone --quiet --depth 1 --branch ios-port https://github.com/willfaust/dxmt.git "$RUNNER_TEMP/Madeira/dxmt"
-          git clone --quiet --depth 1 --branch ios-port-2607 https://github.com/willfaust/FEX.git "$RUNNER_TEMP/Madeira/FEX"
-          # Dependencies used by the FEX iOS CMake build, not just its headers.
-          git -C "$RUNNER_TEMP/Madeira/FEX" submodule update --init --depth 1 \
-            External/vixl External/fmt External/xxhash \
-            External/range-v3 External/unordered_dense
-          echo "Engine source fetched: Madeira + DXMT + FEX + required FEX headers"
+          python3 SteamMobile/tools/fetch_native_sources.py "$RUNNER_TEMP/Madeira"
+          python3 SteamMobile/tools/prepare_native_build.py "$RUNNER_TEMP/Madeira"
+      - name: Install native build host tools
+        run: brew install bison ninja llvm pkg-config
       - name: Apply genuine DXMT and Wine emulation patches
         shell: bash
         run: |
@@ -135,6 +131,24 @@ jobs:
           rustup target add aarch64-apple-ios
           bash "$RUNNER_TEMP/Madeira/build/rppairing-ios/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobilePairingBuild.log"
           test -s "$RUNNER_TEMP/Madeira/app/Madeira/libmadeira_rppairing.a"
+      - name: Build Wine native libraries from complete source
+        id: wine_native
+        timeout-minutes: 45
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash SteamMobile/tools/build_wine_native.sh "$RUNNER_TEMP/Madeira" 2>&1 | tee "$RUNNER_TEMP/SteamMobileWineBuild.log"
+      - name: Build LLVM for iOS and link the patched DXMT archive
+        id: dxmt_native
+        timeout-minutes: 90
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash SteamMobile/tools/build_dxmt_native.sh "$RUNNER_TEMP/Madeira" 2>&1 | tee "$RUNNER_TEMP/SteamMobileDXMTBuild.log"
+      - name: Record actual dependency inputs and toolchain versions
+        run: python3 SteamMobile/tools/record_native_build.py "$RUNNER_TEMP/Madeira" "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json"
       - name: Diagnose Xcode Swift compile before incomplete native link
         timeout-minutes: 12
         continue-on-error: true
@@ -170,6 +184,10 @@ jobs:
           set -euo pipefail
           R="$RUNNER_TEMP/Madeira"
           missing=0
+          # Both independent builds must succeed. A leftover partial archive
+          # must never make the release gate pass after a compiler error.
+          [[ '${{ steps.wine_native.outcome }}' == success ]] || missing=1
+          [[ '${{ steps.dxmt_native.outcome }}' == success ]] || missing=1
           # Do not create empty stand-ins. Upstream's clean-checkout
           # docs/BUILDING.md records these unbundled/unreproducible inputs.
           for rel in \
@@ -254,6 +272,36 @@ jobs:
             SteamMobile_pairing_build.log
             SteamMobile_typecheck.log
             SteamMobile_native_build_readme.txt
+          if-no-files-found: warn
+      - name: Collect native dependency compiler diagnostics and provenance
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/SteamMobileDependencyDiagnostics"
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          root = temp / 'Madeira'
+          out = temp / 'SteamMobileDependencyDiagnostics'
+          for pattern in ('build/**/*.err', 'build/**/err-*.txt', 'build/gnutls-ios/obj/*.log',
+                          'wine/build-macos/config.log', 'toolchains/*-build/CMakeCache.txt',
+                          'toolchains/*-build/CMakeFiles/CMakeConfigureLog.yaml'):
+              for source in root.glob(pattern):
+                  if source.is_file():
+                      dest = out / source.relative_to(root)
+                      dest.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(source, dest)
+          for source in temp.glob('SteamMobile*Build.log'):
+              shutil.copy2(source, out / source.name)
+          PY
+      - name: Upload source dependency diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamMobile_dependency_build_evidence
+          path: |
+            ${{ runner.temp }}/SteamMobileDependencyDiagnostics
+            ${{ runner.temp }}/SteamMobileProvenance
           if-no-files-found: warn
 
   playable-baseline-ipa:
