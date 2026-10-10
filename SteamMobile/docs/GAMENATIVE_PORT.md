@@ -23,6 +23,11 @@ redistribute GameNative's Android, Linux or Windows executable binaries.
   Valve's game client holds the account. Games keep their existing real
   Steam client path; refresh after gameplay.
 
+- Notification deduplication persists per hashed account and game, based only
+  on confirmed server reads. Account changes invalidate pending UI responses.
+  The selector includes the complete owned-game list. These additions still
+  require native compilation and real account testing.
+
 ## Not completed (do NOT label as working)
 
 - **Automatically writing achievement unlocks back to Steam:** GameNative
@@ -56,8 +61,9 @@ attestations or bypass anti-cheat.
 The new Swift reader is applied by
 `SteamMobile/tools/patch_gamenative_achievements.py`, tested in Linux
 source validation, and compiled by the macOS Xcode diagnostic pipeline.
-Native IPA linkage is **still blocked** by the missing upstream
-Wine/DXMT archives and separately licensed x64 VC runtime files. Source
+All three Wine archives now build from source. The LLVM/DXMT and final Xcode
+link fixes await native CI. The user supplied validated local x64 CRT inputs.
+See NATIVE_REBUILD.md for the exact build state. Source
 integration is not proof that the server accepts every account/game response
 or that a game unlock reaches Steam.
 

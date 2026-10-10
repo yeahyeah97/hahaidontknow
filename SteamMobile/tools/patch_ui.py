@@ -108,9 +108,10 @@ struct SteamMobilePerformanceTab: View {
                         .font(.headline.weight(.black)).foregroundStyle(.cyan)
                     Text("REAL PERFORMANCE. NO FAKE FPS UNLOCKS.")
                         .font(.title3.weight(.bold)).foregroundStyle(.white)
-                    Text("Measure DX9, Wine and FEX throughput. RAW removes presentation pacing but cannot remove CPU/GPU bottlenecks.")
+                    Text("Capture present throughput and device conditions, then compare identical gameplay runs. RAW removes presentation pacing but cannot remove CPU/GPU bottlenecks.")
                         .font(.footnote).foregroundStyle(.white.opacity(0.7))
                 }.padding(.vertical, 8)
+                SteamMobileCaptureCard()
                 SteamMobileCard {
                     Text("Frame pacing").font(.headline).foregroundStyle(.white)
                     HStack(spacing: 6) {
@@ -127,11 +128,11 @@ struct SteamMobilePerformanceTab: View {
                         .font(.caption2).foregroundStyle(.white.opacity(0.68))
                 }
                 SteamMobileCard {
-                    Label("Runtime health", systemImage: "waveform.path.ecg")
+                    Label("Engine components", systemImage: "waveform.path.ecg")
                         .font(.headline).foregroundStyle(.white)
                     VStack(alignment: .leading, spacing: 9) {
                         Label("FEX JIT code translation", systemImage: "bolt.fill")
-                        Label("DXMT Metal renderer / DirectX 9", systemImage: "cube.transparent")
+                        Label("DXMT / Metal translation", systemImage: "cube.transparent")
                         Label("Wine Windows API bridge", systemImage: "square.stack.3d.up")
                     }.font(.subheadline).foregroundStyle(.white.opacity(0.87))
                     Button("JIT pairing & diagnostics", action: openJIT)
@@ -160,36 +161,47 @@ struct SteamMobileAchievementsTab: View {
     @State private var achievements: [SteamMobileAchievement] = []
     @State private var inFlight = false
     @State private var error: String?
-    @State private var lastCloudUnlocks: [Int: Set<String>] = [:]
+    @State private var requestID = UUID()
     @State private var newlyConfirmed: [String] = []
     private var unlockedCount: Int { achievements.filter(\.unlocked).count }
 
     private func refresh() {
-        guard selectedAppID > 0, !inFlight else { return }
+        guard selectedAppID > 0, !inFlight,
+              let account = library.steamMobileAchievementAccountKey else { return }
         let appID = selectedAppID
+        let token = UUID()
+        requestID = token
+        let baselineKey = "SteamMobileConfirmedAchievements.v1." + account + "." + String(appID)
         inFlight = true
         error = nil
         newlyConfirmed = []
         achievements = []
         Task { @MainActor in
-            defer { inFlight = false }
+            defer { if requestID == token { inFlight = false } }
             do {
                 let serverAchievements = try await library.steamMobileAchievements(for: appID)
+                guard requestID == token, selectedAppID == appID,
+                      library.steamMobileAchievementAccountKey == account,
+                      SteamSignIn.isSignedIn else { return }
                 // First read seeds the baseline without noisy "unlock" popups
                 // for trophies earned months ago. Later reads show only
                 // additional achievements actually confirmed by Steam.
                 let confirmed = Set(serverAchievements.filter(\.unlocked).map(\.id))
-                if let baseline = lastCloudUnlocks[appID] {
-                    let fresh = confirmed.subtracting(baseline)
+                if let saved = UserDefaults.standard.stringArray(forKey: baselineKey) {
+                    let fresh = confirmed.subtracting(Set(saved))
                     newlyConfirmed = serverAchievements.filter { fresh.contains($0.id) }
                         .map(\.title)
                     if !newlyConfirmed.isEmpty {
                         UINotificationFeedbackGenerator().notificationOccurred(.success)
                     }
                 }
-                lastCloudUnlocks[appID] = confirmed
+                // Persist server-confirmed notification history across restarts.
+                // Union preserves deduplication through temporary server resets.
+                let previous = Set(UserDefaults.standard.stringArray(forKey: baselineKey) ?? [])
+                UserDefaults.standard.set(Array(previous.union(confirmed)).sorted(), forKey: baselineKey)
                 achievements = serverAchievements
             } catch {
+                guard requestID == token, library.steamMobileAchievementAccountKey == account else { return }
                 self.error = error.localizedDescription
             }
         }
@@ -220,11 +232,12 @@ struct SteamMobileAchievementsTab: View {
                         .font(.headline).foregroundStyle(.white)
                     Picker("Steam game", selection: $selectedAppID) {
                         Text("Choose a game").tag(0)
-                        ForEach(Array(library.owned.prefix(150))) { game in
+                        ForEach(library.owned) { game in
                             Text(game.name).tag(game.id)
                         }
                     }
                     .tint(.cyan)
+                    .disabled(inFlight)
                     .onChange(of: selectedAppID) { _, _ in refresh() }
                     HStack {
                         Button { refresh() } label: {
@@ -313,7 +326,9 @@ struct SteamMobileAchievementsTab: View {
         .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in
             achievements = []
             newlyConfirmed = []
-            lastCloudUnlocks = [:]
+            requestID = UUID()
+            inFlight = false
+            selectedAppID = 0
             error = nil
             library.start()
         }
@@ -450,7 +465,7 @@ def patch(src):
         }''', "Steam Mobile controller tab cycle")
     if "struct SteamMobilePerformanceTab" in src:
         raise RuntimeError("Already has UI appended; refuse duplicate patch")
-    return src + "\n" + UI_APPEND
+    return src + "\n" + UI_APPEND + "\n" + (Path(__file__).resolve().parents[1] / "runtime/PerformanceCapture.swift").read_text(encoding="utf-8")
 
 def main():
     ap=argparse.ArgumentParser()

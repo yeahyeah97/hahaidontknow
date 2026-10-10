@@ -206,10 +206,14 @@ enum SteamMobileAchievementReader {
 '''
 
 STEAM_METHOD = r'''
+    var steamMobileAchievementAccountKey: String? { Self.accountKey(SteamSignIn.accountName) }
+
     /// Reads Valve's real achievement state using Madeira's logged-in CM session.
     /// Never open a second login while Dock / a game runs: account handover wins.
     func steamMobileAchievements(for appID: Int) async throws -> [SteamMobileAchievement] {
-        guard SteamSignIn.isSignedIn else { throw SteamMobileAchievementError.notSignedIn }
+        guard SteamSignIn.isSignedIn, let account = steamMobileAchievementAccountKey else {
+            throw SteamMobileAchievementError.notSignedIn
+        }
         guard appID > 0, appID <= Int(UInt32.max) else {
             throw SteamMobileAchievementError.invalidResponse
         }
@@ -218,7 +222,12 @@ STEAM_METHOD = r'''
         }
         try await session.ensureConnected()
         let steamID = session.steamID
-        guard steamID != 0 else { throw SteamMobileAchievementError.notSignedIn }
+        guard steamID != 0, SteamSignIn.isSignedIn, steamMobileAchievementAccountKey == account else {
+            throw SteamMobileAchievementError.notSignedIn
+        }
+        guard !inSession && gate.open && !gate.heldForDock else {
+            throw SteamMobileAchievementError.gameSessionRunning
+        }
         var request = ProtobufEncoder()
         request.writeFixed64(fieldNumber: 1, value: UInt64(appID)) // game_id
         request.writeFixed64(fieldNumber: 4, value: steamID)        // steam_id_for_user
@@ -226,6 +235,8 @@ STEAM_METHOD = r'''
             eMsg: .clientGetUserStats, body: request.data,
             responseEMsg: .clientGetUserStatsResponse, timeout: 20
         )
+        guard SteamSignIn.isSignedIn, steamMobileAchievementAccountKey == account,
+              session.steamID == steamID else { throw SteamMobileAchievementError.notSignedIn }
         return try SteamMobileAchievementReader.parse(answer.body, appID: appID)
     }
 '''

@@ -12,6 +12,7 @@ and DXMT archive combination from locked source revisions.
 - **PASS:** all three Wine archives built from source in [macOS run 38055570349](https://github.com/yeahyeah97/hahaidontknow/actions/runs/38055570349).
 - **FAILED:** iOS LLVM linked an unavailable `rt` library after static-only CMake probes falsely detected it. Xcode also exposed the omitted FEX `JemallocLibs` target. Fixes await the next native run.
 - **READY LOCALLY:** 12 distinct Microsoft-signed x64 CRT DLLs, all version 14.51.36247.0, supplied by the user and pinned by hash. CI exports the successfully linked app as a build input; local assembly inserts these DLLs and runs the unchanged final package gate.
+- **IMPLEMENTED, NATIVE VALIDATION PENDING:** bounded performance capture/export; elapsed-time-weighted comparison with mismatched-condition guards; persisted account/game achievement notification history and stale-response rejection.
 - **NOT TESTED:** device installation, startup, JIT activation, account login,
   game performance, achievement writes, launcher installation/login/gameplay,
   thermal stability and sustained input latency.

@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate clean native build plans
         run: python3 SteamMobile/tests/test_native_build.py
+      - name: Validate capture comparison arithmetic and invalid data rejection
+        run: python3 SteamMobile/tests/test_capture_comparison.py
       - name: Fetch pinned Madeira and DXMT engine sources
         shell: bash
         run: |

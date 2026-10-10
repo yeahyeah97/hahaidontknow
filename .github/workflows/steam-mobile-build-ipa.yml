@@ -61,7 +61,7 @@ jobs:
           python -m pip install --disable-pip-version-check pillow
           python SteamMobile/tools/generate_app_icon.py "$RUNNER_TEMP/Madeira/app/Madeira/Assets.xcassets/AppIcon.appiconset"
           python - <<'PY'
-          import json, os
+          import json, os, plistlib
           from PIL import Image
           root = os.path.join(os.environ["RUNNER_TEMP"], "Madeira/app/Madeira/Assets.xcassets/AppIcon.appiconset")
           c = json.load(open(os.path.join(root, "Contents.json")))
@@ -69,6 +69,12 @@ jobs:
           with Image.open(os.path.join(root, "SteamMobile1024.png")) as img:
               assert img.size == (1024,1024) and img.mode == "RGB"
           print("Steam Mobile iOS icon + asset catalog PASS")
+          plist_path = os.path.join(os.environ["RUNNER_TEMP"], "Madeira/app/Madeira/Info.plist")
+          with open(plist_path, "rb") as stream:
+              metadata = plistlib.load(stream)
+          metadata["SteamMobileSourceCommit"] = os.environ["GITHUB_SHA"]
+          with open(plist_path, "wb") as stream:
+              plistlib.dump(metadata, stream)
           PY
       - name: Parse patched iOS JIT pairing Swift before native linking
         shell: bash
