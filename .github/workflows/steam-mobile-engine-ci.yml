@@ -25,6 +25,8 @@ jobs:
           mkdir -p /tmp/steam-mobile/dxmt/src/d3d9
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/Winios/Winios.m -o /tmp/steam-mobile/Madeira/app/Madeira/Winios/Winios.m
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/FEXBridge.mm -o /tmp/steam-mobile/Madeira/app/Madeira/FEXBridge.mm
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/JITPairing.swift -o /tmp/steam-mobile/Madeira/app/Madeira/JITPairing.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/MadeiraApp.swift -o /tmp/steam-mobile/Madeira/app/Madeira/MadeiraApp.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/dxmt/db546ee466ad50ec6463edb5fa183de11db43761/src/d3d9/d3d9_multithread.hpp -o /tmp/steam-mobile/dxmt/src/d3d9/d3d9_multithread.hpp
       - name: Dry-run native patch checks
         run: |
