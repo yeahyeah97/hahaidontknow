@@ -53,6 +53,15 @@ jobs:
           set -euo pipefail
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
+      - name: Parse patched iOS JIT pairing Swift before native linking
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Parse validates syntax of both modified Swift units even while
+          # unbundled upstream native libraries block full Xcode linking.
+          xcrun swiftc -frontend -parse \
+            "$RUNNER_TEMP/Madeira/app/Madeira/JITPairing.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraApp.swift"
       - name: Generate FEX headers and compile native iOS FEXCore
         timeout-minutes: 25
         shell: bash
