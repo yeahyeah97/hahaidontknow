@@ -43,6 +43,13 @@ jobs:
           set -euo pipefail
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
+      - name: Prepare missing optional x64 CRT directory (diagnostic only)
+        shell: bash
+        run: |
+          # The source requires this app resource even when the licensed
+          # Microsoft x64 DLLs are not available in the public checkout.
+          # This does NOT supply those DLLs or make a deliverable build.
+          mkdir -p "$RUNNER_TEMP/Madeira/app/Madeira/x86_64-vcruntime"
       - name: Attempt complete Debug device build with Xcode
         shell: bash
         run: |
@@ -59,6 +66,9 @@ jobs:
           set -euo pipefail
           APP="$RUNNER_TEMP/SteamMobileDerived/Build/Products/Debug-iphoneos/Madeira.app"
           test -s "$APP/Madeira"
+          # Never publish a purportedly complete engine with an empty
+          # Microsoft x64 CRT resource set.
+          test -n "$(find "$APP/x86_64-vcruntime" -type f -name '*.dll' -print -quit)"
           mkdir -p "$RUNNER_TEMP/nativeipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/nativeipa/Payload/"
           (cd "$RUNNER_TEMP/nativeipa" && zip -qry "$RUNNER_TEMP/native_unrepacked.ipa" Payload)
