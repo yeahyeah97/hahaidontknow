@@ -4,6 +4,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
 #include <cstdio>
 using Clock = std::chrono::steady_clock;
 static uint32_t thread_id() {
