@@ -37,7 +37,10 @@ jobs:
           git clone --quiet --depth 1 --branch main https://github.com/willfaust/Madeira.git "$RUNNER_TEMP/Madeira"
           git clone --quiet --depth 1 --branch ios-port https://github.com/willfaust/dxmt.git "$RUNNER_TEMP/Madeira/dxmt"
           git clone --quiet --depth 1 --branch ios-port-2607 https://github.com/willfaust/FEX.git "$RUNNER_TEMP/Madeira/FEX"
-          git -C "$RUNNER_TEMP/Madeira/FEX" submodule update --init --depth 1 External/fmt External/range-v3 External/unordered_dense
+          # Dependencies used by the FEX iOS CMake build, not just its headers.
+          git -C "$RUNNER_TEMP/Madeira/FEX" submodule update --init --depth 1 \
+            External/vixl External/fmt External/xxhash \
+            External/range-v3 External/unordered_dense
           echo "Engine source fetched: Madeira + DXMT + FEX + required FEX headers"
       - name: Apply genuine DXMT and Wine emulation patches
         shell: bash
@@ -45,13 +48,52 @@ jobs:
           set -euo pipefail
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
-      - name: Prepare missing optional x64 CRT directory (diagnostic only)
+      - name: Generate FEX headers and compile native iOS FEXCore
+        timeout-minutes: 25
         shell: bash
         run: |
-          # The source requires this app resource even when the licensed
-          # Microsoft x64 DLLs are not available in the public checkout.
-          # This does NOT supply those DLLs or make a deliverable build.
-          mkdir -p "$RUNNER_TEMP/Madeira/app/Madeira/x86_64-vcruntime"
+          set -euo pipefail
+          # Generated headers do not exist in the FEX source checkout.
+          # Compiling the actual targets generates ConfigValues.inl and
+          # ConfigOptions.inl, and their required static libraries.
+          bash "$RUNNER_TEMP/Madeira/build/fex-ios/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigValues.inl"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigOptions.inl"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore.a"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
+      - name: Require real native build libraries and licensed CRT binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          missing=0
+          # Do not create empty stand-ins. Upstream's clean-checkout
+          # docs/BUILDING.md records these unbundled/unreproducible inputs.
+          for rel in \
+            app/Madeira/libdxmt_combined.a \
+            app/Madeira/libntdll_unix.a \
+            app/Madeira/libwineserver.a \
+            app/Madeira/libwin32u_unix.a \
+            app/Madeira/libmadeira_rppairing.a \
+            app/Madeira/libavformat.a \
+            app/Madeira/libavcodec.a \
+            app/Madeira/libswresample.a \
+            app/Madeira/libavutil.a; do
+            if [[ ! -s "$R/$rel" ]]; then
+              echo "::error file=$rel::Missing real iOS static library (upstream docs/BUILDING.md)"
+              missing=1
+            fi
+          done
+          if [[ ! -d "$R/app/Madeira/x86_64-vcruntime" ]] || \
+             [[ -z "$(find "$R/app/Madeira/x86_64-vcruntime" -type f -iname '*.dll' -print -quit 2>/dev/null)" ]]; then
+            echo "::error::Missing licensed Microsoft x64 VC runtime DLLs"
+            missing=1
+          fi
+          if [[ "$missing" -ne 0 ]]; then
+            echo "::error::Native prerequisites unavailable: no valid optimized IPA can be produced from this checkout."
+            exit 1
+          fi
+          bash "$R/build/stage-licenses.sh"
       - name: Attempt complete Debug device build with Xcode
         shell: bash
         run: |
@@ -86,7 +128,8 @@ jobs:
         shell: bash
         run: |
           test ! -f "$RUNNER_TEMP/SteamMobileNativeBuild.log" || cp "$RUNNER_TEMP/SteamMobileNativeBuild.log" "$GITHUB_WORKSPACE/SteamMobile_native_build.log"
-          echo "See Madeira docs/BUILDING.md for the missing submodules and native toolchains." > SteamMobile_native_build_readme.txt
+          test ! -f "$RUNNER_TEMP/SteamMobileFEXBuild.log" || cp "$RUNNER_TEMP/SteamMobileFEXBuild.log" "$GITHUB_WORKSPACE/SteamMobile_fex_build.log"
+          echo "See upstream Madeira docs/BUILDING.md: extra native libraries/toolchains and licensed CRT DLLs are required. The baseline IPA does NOT contain SM-001 patches." > SteamMobile_native_build_readme.txt
       - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -94,6 +137,7 @@ jobs:
           name: SteamMobile_native_build_diagnostics
           path: |
             SteamMobile_native_build.log
+            SteamMobile_fex_build.log
             SteamMobile_native_build_readme.txt
           if-no-files-found: warn
 
