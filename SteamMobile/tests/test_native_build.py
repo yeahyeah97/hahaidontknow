@@ -46,7 +46,7 @@ for cpp in airconv_context.cpp air_type.cpp; do
     compile_cxx "$DXMT_SRC/airconv/$cpp" "${cpp%.cpp}"
 done
 echo "Failed:$FAILED_FILES"
-echo "See .err files in $OBJ_DIR/"
+    echo "See .err files in $OBJ_DIR/"
 # The app links libdxmt_combined.a
 echo "unavailable old archive"
 '''
