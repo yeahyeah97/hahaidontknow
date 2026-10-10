@@ -14,7 +14,7 @@ jobs:
   native-engine-attempt:
     name: Native engine build attempt (experimental)
     runs-on: xcode-27
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Verify Xcode environment
@@ -23,6 +23,13 @@ jobs:
           swift --version
           xcodebuild -showsdks | grep -E 'iOS|iphoneos'
           swift --version | grep -E 'Swift version 6\.4|Swift version 6\.5'
+      - name: Install Apple's Metal shader toolchain (Xcode 27)
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --find metal
       - name: Fetch Madeira source and current DXMT implementation
         shell: bash
         run: |
