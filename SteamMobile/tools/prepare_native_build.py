@@ -81,6 +81,32 @@ def prepare(root):
     pending[path] = text.replace('MATCHES "Darwin"', 'MATCHES "Darwin|iOS"')
     path = root / "build/dxmt-ios/build.sh"
     text = path.read_text(encoding="utf-8")
+    # DXMT Meson generates three embedded Metal AIR headers before compiling
+    # airconv_context.cpp. The upstream hand-written iOS script didn't copy
+    # that generator edge; without it the first unit fails on air_msad.h.
+    shader_step = r'''echo "=== Steam Mobile: generate embedded airconv Metal shader headers ==="
+# These AIR blobs are linked as LLVM modules by airconv_context.cpp.
+# Follow dxmt/src/airconv/meson.build: metal3.1 + macOS14 AIR target,
+# then the Meson hexdump_generator: xxd -n <basename> -i <air> <header>.
+mkdir -p "$BUILD_DIR/shader-headers"
+for name in air_msad air_samplepos air_tessellation; do
+    src="$DXMT_SRC/airconv/shaders/$name.metal"
+    air="$BUILD_DIR/shader-headers/$name.air"
+    hdr="$BUILD_DIR/shader-headers/$name.h"
+    test -s "$src"
+    xcrun -sdk macosx metal -std=metal3.1 --target=air64-apple-macos14.0 \\
+        -o "$air" -c "$src"
+    test -s "$air"
+    xxd -n "$name" -i "$air" "$hdr"
+    test -s "$hdr"
+    grep -Fq "unsigned char $name[]" "$hdr" || {
+        echo "Malformed DXMT AIR header $hdr" >&2; exit 1;
+    }
+    echo "  $name.h generated ($(wc -c < "$air" | tr -d ' ') AIR bytes)"
+done
+
+echo "=== airconv (C++ 20, needs LLVM headers) ==="'''
+    text = once(text, 'echo "=== airconv (C++ 20, needs LLVM headers) ==="', shader_step)
     start = text.index('# The app links libdxmt_combined.a')
     pending[path] = text[:start] + '''# Steam Mobile: create the combined archive on a clean checkout as documented
 # in upstream build/dxmt-ios/README.md. Do not refresh a pre-existing binary.
