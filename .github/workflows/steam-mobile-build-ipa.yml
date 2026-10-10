@@ -1,7 +1,7 @@
 name: Steam Mobile - Build IPA v2 (signing fix + Xcode 27)
 on:
   push:
-    branches: [steam-mobile-engine-sm001]
+    branches: [steam-mobile-engine-sm001, codex/steam-mobile-sm001-native-build-fix-20261010]
     paths:
       - ".github/workflows/steam-mobile-build-ipa.yml"
       - "SteamMobile/**"
@@ -142,6 +142,9 @@ jobs:
           if-no-files-found: warn
 
   playable-baseline-ipa:
+    # Preserve the proven upstream baseline, but avoid redundant 140MB
+    # downloads when testing an experimental feature branch.
+    if: github.ref == 'refs/heads/steam-mobile-engine-sm001' || github.event_name == 'workflow_dispatch'
     name: Produce separate Steam Mobile baseline IPA (upstream engine)
     runs-on: macos-15
     timeout-minutes: 20
