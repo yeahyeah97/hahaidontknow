@@ -9,7 +9,7 @@ import plistlib
 import sys
 import zipfile
 from pathlib import Path
-from inspect_binary import device_executable, windows_dll
+from inspect_binary import device_executable, windows_dll, windows_exe
 
 MARKER = b"STEAM_MOBILE_NATIVE_ENGINE_SM002"
 
@@ -89,6 +89,16 @@ def validate(path: Path, bundle_id: str = "com.steammobile.engine") -> dict:
                 windows_dll(z.read(name))
             except ValueError as error:
                 raise InvalidOptimizedIPA(f"{name}: {error}") from error
+        dock_host = root + "arm64ec-windows/dockhost.exe"
+        dock_notice = root + "arm64ec-windows/dock-notices.txt"
+        if dock_host not in names or dock_notice not in names:
+            raise InvalidOptimizedIPA("Native Steam Dock missing: account library/download UI would remain hidden")
+        try:
+            windows_exe(z.read(dock_host))
+        except ValueError as error:
+            raise InvalidOptimizedIPA(f"Native Steam Dock: {error}") from error
+        if z.getinfo(dock_notice).file_size < 100:
+            raise InvalidOptimizedIPA("Missing required Dock redistributable notices")
         fex_dll = root + "arm64ec-windows/xtajit64.dll"
         if fex_dll not in names or z.getinfo(fex_dll).file_size == 0:
             raise InvalidOptimizedIPA("Missing ARM64EC FEX guest translator")
