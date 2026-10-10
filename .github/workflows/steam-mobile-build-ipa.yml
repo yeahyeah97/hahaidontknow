@@ -61,7 +61,8 @@ jobs:
           # unbundled upstream native libraries block full Xcode linking.
           xcrun swiftc -frontend -parse \
             "$RUNNER_TEMP/Madeira/app/Madeira/JITPairing.swift" \
-            "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraApp.swift"
+            "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraApp.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/FPSOverlay.swift"
       - name: Generate FEX headers and compile native iOS FEXCore
         timeout-minutes: 25
         shell: bash
