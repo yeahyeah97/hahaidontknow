@@ -109,10 +109,14 @@ jobs:
             -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
             2>&1 | tee "$RUNNER_TEMP/SteamMobileFEXBuild.log"
           bash "$R/build/fex-ios/build.sh" 2>&1 | tee -a "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          # Always defined by FEX, including allocator=OFF: contains the
+          # platform allocator hooks. The upstream script omits this target.
+          cmake --build "$R/FEX/build-ios" --target JemallocLibs 2>&1 | tee -a "$RUNNER_TEMP/SteamMobileFEXBuild.log"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigValues.inl"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigOptions.inl"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore.a"
           test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libJemallocLibs.a"
       - name: Build LGPL FFmpeg iOS static libraries from verified upstream tarball
         timeout-minutes: 20
         shell: bash
@@ -150,6 +154,7 @@ jobs:
       - name: Record actual dependency inputs and toolchain versions
         run: python3 SteamMobile/tools/record_native_build.py "$RUNNER_TEMP/Madeira" "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json"
       - name: Diagnose Xcode Swift compile before incomplete native link
+        id: native_link
         timeout-minutes: 12
         continue-on-error: true
         shell: bash
@@ -170,6 +175,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/SteamMobileDiagnosticDerived" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            LD_GENERATE_MAP_FILE=YES \
             build > "$RUNNER_TEMP/SteamMobileTypecheck.log" 2>&1 || rc=$?
           rmdir "$RUNNER_TEMP/Madeira/app/Madeira/x86_64-vcruntime" || true
           echo "Xcode diagnostic exit code: $rc"
@@ -178,6 +184,29 @@ jobs:
             echo "::warning::Diagnostic compile was unsuccessful: genuine native dependencies are still absent."
           fi
           exit "$rc"
+      - name: Export linked app for local runtime assembly
+        if: steps.wine_native.outcome == 'success' && steps.dxmt_native.outcome == 'success' && steps.native_link.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This is a build input, never an installable IPA. The user's
+          # Microsoft runtime files are added and checked on their computer.
+          bash "$RUNNER_TEMP/Madeira/build/stage-licenses.sh"
+          APP="$RUNNER_TEMP/SteamMobileDiagnosticDerived/Build/Products/Debug-iphoneos/Madeira.app"
+          cp -R "$RUNNER_TEMP/Madeira/app/Madeira/licenses" "$APP/"
+          mkdir -p "$RUNNER_TEMP/SteamMobileNativeHandoff"
+          (cd "$(dirname "$APP")" && zip -qry "$RUNNER_TEMP/SteamMobileNativeHandoff/native-app.zip" Madeira.app)
+          python3 SteamMobile/tools/record_native_handoff.py \
+            "$RUNNER_TEMP/SteamMobileNativeHandoff" "$RUNNER_TEMP/SteamMobileDiagnosticDerived"
+          cp "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json" "$RUNNER_TEMP/SteamMobileNativeHandoff/"
+          cp "$RUNNER_TEMP/SteamMobileTypecheck.log" "$RUNNER_TEMP/SteamMobileNativeHandoff/"
+      - name: Upload linked app build input for local assembly
+        if: steps.wine_native.outcome == 'success' && steps.dxmt_native.outcome == 'success' && steps.native_link.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamMobile_native_app_REQUIRES_LOCAL_RUNTIME
+          path: ${{ runner.temp }}/SteamMobileNativeHandoff
+          if-no-files-found: error
       - name: Require real native build libraries and licensed CRT binaries
         shell: bash
         run: |

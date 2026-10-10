@@ -285,7 +285,61 @@ def patch_jit_pairing(src):
                 Text("If Pair with Madeira is absent: allow Local Network for Steam Mobile in Settings, keep Wi-Fi enabled, restart pairing, and return here if the system never shows a code.")
                     .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 cancel"""
-    return replace_one(src, old, new, "JIT pairing troubleshooting on UI")
+    src = replace_one(src, old, new, "JIT pairing troubleshooting on UI")
+    src = replace_one(src,
+        '    @Published private(set) var backgroundLimited = false',
+        '''    @Published private(set) var backgroundLimited = false
+    // Registration submission is not confirmation that Bonjour advertised us.
+    @Published private(set) var advertisingConfirmed = false
+    @Published private(set) var notificationNotice: String?''',
+        "JIT observable advertisement and notification evidence")
+    src = replace_one(src,
+        '''            { _, _, error, _, _, _, _ in
+                guard error != DNSServiceErrorType(kDNSServiceErr_NoError) else { return }
+                DispatchQueue.main.async { OnDevicePairing.shared.advertisingFailed(error) }
+            }, nil)''',
+        '''            { service, _, error, _, _, _, _ in
+                DispatchQueue.main.async {
+                    let pairing = OnDevicePairing.shared
+                    // Ignore callbacks from a cancelled/finished registration.
+                    guard pairing.active, service == pairing.registration else { return }
+                    if error == DNSServiceErrorType(kDNSServiceErr_NoError) {
+                        pairing.advertisingConfirmed = true
+                        pairing.log("Bonjour pairing advertisement confirmed by system")
+                    } else {
+                        pairing.advertisingFailed(error)
+                    }
+                }
+            }, nil)''', "JIT asynchronous Bonjour result")
+    src = replace_one(src,
+        '    private func stopAdvertising() {\n',
+        '    private func stopAdvertising() {\n        advertisingConfirmed = false\n',
+        "JIT clear cancelled advertisement evidence")
+    src = replace_one(src,
+        '        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }',
+        '''        notificationNotice = nil
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            let failed = error != nil
+            DispatchQueue.main.async {
+                OnDevicePairing.shared.notificationNotice = granted ? nil :
+                    (failed ? "Notification permission could not be checked. Return here to read the pairing code."
+                            : "Notifications are disabled. Allow notifications for Steam Mobile in Settings, or return here to read the pairing code. The background banner has separate requirements.")
+            }
+        }''', "JIT notification permission result")
+    src = replace_one(src,
+        '                if pairing.backgroundLimited {',
+        '''                Label(pairing.advertisingConfirmed
+                      ? "Bonjour advertisement confirmed. Waiting for you to select the host in Developer Mode."
+                      : "Waiting for Bonjour to confirm the pairing advertisement…",
+                      systemImage: pairing.advertisingConfirmed ? "antenna.radiowaves.left.and.right" : "network")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("The code appears after this iPhone connects to the pairing host. Advertising alone does not enable JIT.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let notice = pairing.notificationNotice {
+                    Text(notice).font(.footnote).foregroundStyle(.orange)
+                }
+                if pairing.backgroundLimited {''', "JIT truthful pairing status panel")
+    return src
 
 
 def patch_app_jit_registration(src):

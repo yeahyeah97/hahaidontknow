@@ -35,6 +35,10 @@ assert "background pairing handler registered at launch" in pairing
 assert "registered == identifier" in pairing
 assert "DNSServiceSetDispatchQueue(ref, .main)" in pairing
 assert "Bonjour pairing advertisement registered" in pairing
+assert "Bonjour pairing advertisement confirmed by system" in pairing
+assert "service == pairing.registration" in pairing
+assert "Notifications are disabled." in pairing
+assert "Advertising alone does not enable JIT." in pairing
 assert "iOS denied the continued pairing task" in pairing
 assert "Steam Mobile SM-001: owner recursion" in header
 assert "std::memory_order_relaxed" in header

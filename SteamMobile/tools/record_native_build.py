@@ -17,7 +17,8 @@ def command(*args):
 
 
 def sha(path):
-    return hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def record(root, output):

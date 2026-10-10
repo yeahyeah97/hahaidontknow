@@ -1,4 +1,26 @@
-# Steam Mobile SM-001 — native build validation and blockers (2026-10-10)
+# Steam Mobile — current build status (2026-10-10)
+
+## Current engineering pass
+
+Source changes are on PR #2, starting with commit
+`e82112f4f2ed38fbfd7616064df8ebfe83829cb2`. The prior native pipeline never
+built the four missing Wine/DXMT archives. It now attempts complete Wine-server
+compilation, generated Wine headers, crypto/font dependencies, host/iOS LLVM,
+and DXMT archive combination from locked source revisions.
+
+- **PASS:** [host CI 38055573832](https://github.com/yeahyeah97/hahaidontknow/actions/runs/38055573832).
+- **PASS:** all three Wine archives built from source in [macOS run 38055570349](https://github.com/yeahyeah97/hahaidontknow/actions/runs/38055570349).
+- **FAILED:** iOS LLVM linked an unavailable `rt` library after static-only CMake probes falsely detected it. Xcode also exposed the omitted FEX `JemallocLibs` target. Fixes await the next native run.
+- **READY LOCALLY:** 12 distinct Microsoft-signed x64 CRT DLLs, all version 14.51.36247.0, supplied by the user and pinned by hash. CI exports the successfully linked app as a build input; local assembly inserts these DLLs and runs the unchanged final package gate.
+- **NOT TESTED:** device installation, startup, JIT activation, account login,
+  game performance, achievement writes, launcher installation/login/gameplay,
+  thermal stability and sustained input latency.
+
+See [NATIVE_REBUILD.md](docs/NATIVE_REBUILD.md) for source-tag identities,
+exact source-build changes, provenance limitations and remaining inputs.
+No optimized IPA or measured FPS gain has been produced by this pass yet.
+
+## Historical SM-001 record (superseded by the status above)
 
 ## What this PR changes
 
