@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SM-001 host verification: real DXMT header compiles and recursive locking works."""
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,6 +20,8 @@ fex = fex_bridge.read_text()
 assert "Steam Mobile SM-001: owner recursion" in header
 assert "std::memory_order_relaxed" in header
 assert "std::memory_order_acquire" in header
+assert "STEAM_MOBILE_D9_LOW_SPIN" in header
+assert "pause_budget" in header
 assert "Steam Mobile SM-001: bounded FIFO drain" in bridge
 assert 'getenv("MADEIRA_INPUT_TRACE")' in bridge
 assert "winios_input_event_t batch[64]" in bridge
@@ -48,7 +51,13 @@ namespace dxmt { struct Logger { template<typename T> static void warn(T&&) {} }
 """)
     (d / "util_env.hpp").write_text("""#pragma once
 #include <string>
-namespace dxmt::env { inline std::string getEnvVar(const char *) { return ""; } }
+#include <cstdlib>
+namespace dxmt::env {
+inline std::string getEnvVar(const char *key) {
+    const char *v = std::getenv(key);
+    return v ? std::string(v) : std::string();
+}
+}
 """)
     (d / "util_string.hpp").write_text("""#pragma once
 #include <string>
@@ -79,4 +88,8 @@ int main() {
            "-o",str(d/"d9-lock-test")]
     subprocess.run(cmd,check=True)
     subprocess.run([str(d/"d9-lock-test")],check=True,timeout=20)
+    # Exercise both lock contention settings; no claims about iPhone FPS.
+    env = os.environ.copy()
+    env["STEAM_MOBILE_D9_LOW_SPIN"] = "1"
+    subprocess.run([str(d/"d9-lock-test")],check=True,timeout=20,env=env)
 print("SM-001/2 patched DXMT, Winios and FEX source verification PASS")
