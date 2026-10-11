@@ -770,5 +770,41 @@ def main():
             copy = games.read_text()
             copy = copy.replace("You can leave Madeira while it downloads:", "You can leave Steam Mobile while it downloads:")
             games.write_text(copy)
-        print("Steam Mobile SwiftUI native library integrated")
+        # Surface Steam Dock's real start/exit signals. Steam LaunchApp result
+        # code 0 does not mean that the game successfully entered gameplay.
+        dock = args.madeira / "app/Madeira/MadeiraDock.swift"
+        dock_src = dock.read_text(encoding="utf-8")
+        dock_src = once(
+            dock_src,
+            '''        "launch-client-error", "launch-option-index", "launch-option-invalid", "launch-option-missing",''',
+            '''        "launch-request-submitted", "launch-game-running", "launch-game-ended",
+        "launch-host-result", "launch-client-error", "launch-option-index", "launch-option-invalid", "launch-option-missing",''',
+            "Expose all actual Steam Dock game process status changes",
+        )
+        dock.write_text(dock_src, encoding="utf-8")
+        screen = args.madeira / "app/Madeira/DockStartScreen.swift"
+        screen_src = screen.read_text(encoding="utf-8")
+        screen_src = once(
+            screen_src,
+            '''        if fields["launch-client-error"] == "0" { return "The game is starting. Waiting for its window…" }''',
+            '''        if fields["launch-game-ended"] == "1" {
+            return "Steam started the game, but it exited before displaying gameplay. Open the diagnostics log."
+        }
+        if fields["launch-client-error"] == "0" { return "The game is starting. Waiting for its window…" }''',
+            "Do not display an indefinite waiting message when the guest process exited",
+        )
+        screen_src = once(
+            screen_src,
+            '''                if let words = DockStartStatus.failure(result: current.result, words: current.failure, launching: model.launching) {
+                    failure = words''',
+            '''                let gameExitedBeforeWindow = current.result == 0 && current.fields["launch-game-ended"] == "1"
+                let words = gameExitedBeforeWindow
+                    ? "Steam launched this title, but its Windows process exited before showing gameplay. In Steam Mobile, open Game details → Startup Rescue, then export the session log if it persists."
+                    : DockStartStatus.failure(result: current.result, words: current.failure, launching: model.launching)
+                if let words {
+                    failure = words''',
+            "Explain early game process exit separately from Steam licence or sign-in failures",
+        )
+        screen.write_text(screen_src, encoding="utf-8")
+        print("Steam Mobile SwiftUI + early-exit diagnostics integrated")
 if __name__=="__main__": main()
