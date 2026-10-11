@@ -210,6 +210,17 @@ jobs:
           bash SteamMobile/tools/build_dxmt_native.sh "$RUNNER_TEMP/Madeira" 2>&1 | tee "$RUNNER_TEMP/SteamMobileDXMTBuild.log"
       - name: Record actual dependency inputs and toolchain versions
         run: python3 SteamMobile/tools/record_native_build.py "$RUNNER_TEMP/Madeira" "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json"
+      - name: Bundle verified Wine Mono .NET compatibility runtime for legacy launchers
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          bash "$R/build/wine-mono/fetch.sh"
+          test -s "$R/build/wine-mono/wine-mono-11.0.0/bin/libmono-2.0-x86.dll"
+          test -s "$R/build/wine-mono/wine-mono-11.0.0/lib/mono/4.5/mscorlib.dll"
+          test -s "$R/build/wine-mono/COPYING"
+          echo "Wine Mono downloaded and SHA-256 verified by pinned upstream fetch.sh; Xcode bundles it in Debug."
       - name: Stage complete GPL and exception licenses before real Xcode link
         shell: bash
         run: |
@@ -303,6 +314,20 @@ jobs:
           test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-app.zip"
           test -s "$R/app/Madeira/arm64ec-windows/dockhost.exe"
           test -s "$R/app/Madeira/arm64ec-windows/dock-notices.txt"
+          # Integrated .NET Framework launcher runtime must be inside linked
+          # app rather than a configured-but-empty Xcode copy.
+          python3 - <<'PY'
+          import os, pathlib, zipfile
+          zpath=pathlib.Path(os.environ['RUNNER_TEMP'])/'SteamMobileNativeHandoff/native-app.zip'
+          with zipfile.ZipFile(zpath) as z:
+              required = ['Madeira.app/wine-mono/COPYING',
+                          'Madeira.app/wine-mono/bin/libmono-2.0-x86.dll',
+                          'Madeira.app/wine-mono/lib/mono/4.5/mscorlib.dll']
+              for name in required:
+                  if name not in z.namelist() or z.getinfo(name).file_size < 100:
+                      raise SystemExit('Missing official Wine Mono runtime from linked native app: '+name)
+          print('Full native Wine Mono .NET runtime verified in IPA handoff.')
+          PY
           bash "$R/build/stage-licenses.sh"
           # Microsoft DLLs are supplied/licensed on the user's PC, not uploaded
           # to GitHub. A verified *linked native app* is the sole CI deliverable
