@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Steam Mobile SM-001: fail-closed native DX9 / iOS Wine engine patcher.
+"""Steam Mobile SM-001/2: fail-closed DXMT / Wine / FEX engine patcher.
 
 Does not alter game INI files, Steam state, or saved data.
 """
@@ -35,7 +35,30 @@ def patch_dxmt(src):
     uint32_t expected = 0;
 
     bool status = m_owner.compare_exchange_weak(expected, thread_id, std::memory_order_acquire);"""
-    return replace_one(src, old, new, "DXMT D3D9 recursive fast path")
+
+    src = replace_one(src, old, new, "DXMT D3D9 recursive fast path")
+    # Experimental bounded spin policy. Never change third-party DXMT builds.
+    # Default retains the original 2000-pause behavior. Opting in to a
+    # shorter spin helps test whether DX9 lock contention burns scarce
+    # mobile CPU time, with a way to return to stock behavior.
+    old = """    if (try_lock())
+      return;
+    uint32_t rounds = 0;"""
+    new = """    if (try_lock())
+      return;
+#ifdef DXMT_MADEIRA
+    // Steam Mobile SM-002: optional low-spin setting for contended DX9 calls.
+    // Defaults to original behavior; does not affect uncontended calls.
+    static const uint32_t pause_budget =
+        env::getEnvVar("STEAM_MOBILE_D9_LOW_SPIN") == "1" ? 128u : 2000u;
+#else
+    constexpr uint32_t pause_budget = 2000u;
+#endif
+    uint32_t rounds = 0;"""
+    src = replace_one(src, old, new, "DXMT opt-in contention spin budget")
+    return replace_one(src, "for (uint32_t i = 0; i < 2000; i++) {",
+                       "for (uint32_t i = 0; i < pause_budget; i++) {",
+                       "DXMT adjustable contention spin loop")
 
 def patch_winios(src):
     old = """/* Public C entry points for Swift / UIKit gesture handlers.
@@ -128,6 +151,253 @@ static int winios_trace_input(void) {
     return drained;"""
     return replace_one(src, old, new, "Winios input FIFO batching")
 
+
+def patch_fex_bridge(src):
+    """Reduce synchronous JIT-allocation logs without suppressing failures.
+
+    Allocation success can be frequent during startup and JIT activity. Keep
+    exhaustion/errors visible; the existing full trace is opt-in for debugging.
+    """
+    old = '    fex_log("JIT pool alloc: %zu bytes at RX=%p (offset %zu/%zu)", size, rx_ptr, offset + size, g_jit_pool_size);'
+    new = """    // Steam Mobile SM-002: no synchronous os_log + stderr per successful JIT allocation.
+    // All allocation failures remain unconditionally logged above.
+    // Restore full logs explicitly using STEAM_MOBILE_JIT_TRACE=1.
+    static const bool trace_allocations = [] {
+        const char *v = getenv("STEAM_MOBILE_JIT_TRACE");
+        return v && v[0] == '1' && v[1] == '\\0';
+    }();
+    if (trace_allocations)
+        fex_log("JIT pool alloc: %zu bytes at RX=%p (offset %zu/%zu)", size, rx_ptr, offset + size, g_jit_pool_size);"""
+    src = replace_one(src, old, new, "FEX success-path allocation log gate")
+    # This marker is emitted by the patched FEX bridge's JIT initialization.
+    # It remains in the final Mach-O, allowing packaging checks to reject an
+    # unmodified Madeira release masquerading as an optimized engine.
+    return replace_one(
+        src,
+        'fex_log("JIT pool initialized: RX=',
+        'fex_log("[STEAM_MOBILE_NATIVE_ENGINE_SM002] JIT pool initialized: RX=',
+        "FEX native build provenance marker",
+    )
+
+
+def patch_jit_pairing(src):
+    """Register iOS background pairing before launch finishes, not on user tap."""
+    old = """    private init() {}
+
+    private func log(_ line: String) { LogStore.shared.log("[jit-pairing] " + line) }"""
+    new = """    private init() {}
+
+    // Steam Mobile JIT-001: BGTaskScheduler handlers must be registered
+    // during app launch. Doing this when the user taps Start Pairing is too
+    // late on iOS and can make the pairing-code background banner vanish.
+    func registerContinuedProcessingAtLaunch() {
+        if #available(iOS 26.0, *) { registerContinuedProcessing() }
+    }
+
+    private func log(_ line: String) { LogStore.shared.log("[jit-pairing] " + line) }"""
+    src = replace_one(src, old, new, "JIT initial background task registration hook")
+
+    old = """        guard error == DNSServiceErrorType(kDNSServiceErr_NoError), let ref else {
+            advertisingFailed(error)
+            return false
+        }
+        DNSServiceSetDispatchQueue(ref, .main)
+        registration = ref
+        return true"""
+    new = """        guard error == DNSServiceErrorType(kDNSServiceErr_NoError), let ref else {
+            advertisingFailed(error)
+            return false
+        }
+        // Steam Mobile JIT-001: an unhandled failed dispatch-queue binding
+        // previously looked just like successful Bonjour registration.
+        let dispatchError = DNSServiceSetDispatchQueue(ref, .main)
+        guard dispatchError == DNSServiceErrorType(kDNSServiceErr_NoError) else {
+            DNSServiceRefDeallocate(ref)
+            advertisingFailed(dispatchError)
+            return false
+        }
+        registration = ref
+        log("Bonjour pairing advertisement registered")
+        return true"""
+    src = replace_one(src, old, new, "JIT Bonjour registration error handling")
+
+    old = """    @available(iOS 26.0, *)
+    private func submitContinued() {
+        guard let identifier = taskIdentifier else { backgroundLimited = true; return }
+        if registered != identifier {
+            let ok = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
+                guard let task = task as? BGContinuedProcessingTask else { task.setTaskCompleted(success: false); return }
+                MainActor.assumeIsolated { OnDevicePairing.shared.attach(task) }
+            }
+            guard ok else { log("register refused"); backgroundLimited = true; return }
+            registered = identifier
+        }
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Madeira",
+                                                       subtitle: "Settings › Privacy & Security › Developer Mode")"""
+    new = """    @available(iOS 26.0, *)
+    private func registerContinuedProcessing() {
+        guard let identifier = taskIdentifier else {
+            log("background pairing ID missing from signed app Info.plist")
+            backgroundLimited = true
+            return
+        }
+        // The permitted identifier must use the actual post-signing bundle ID.
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              identifier == bundleID + ".pairing.session" else {
+            log("background pairing ID does not match signed bundle identifier")
+            backgroundLimited = true
+            return
+        }
+        if registered == identifier { return }
+        let ok = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
+            guard let task = task as? BGContinuedProcessingTask else { task.setTaskCompleted(success: false); return }
+            MainActor.assumeIsolated { OnDevicePairing.shared.attach(task) }
+        }
+        guard ok else {
+            log("background pairing handler registration refused during app launch")
+            backgroundLimited = true
+            return
+        }
+        registered = identifier
+        log("background pairing handler registered at launch")
+    }
+
+    @available(iOS 26.0, *)
+    private func submitContinued() {
+        guard let identifier = taskIdentifier, registered == identifier else {
+            log("cannot start background PIN banner: pairing handler not registered at launch")
+            backgroundLimited = true
+            return
+        }
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Madeira",
+                                                       subtitle: "Settings › Privacy & Security › Developer Mode")"""
+    src = replace_one(src, old, new, "JIT early-registration vs background request split")
+
+    old = """                if pairing.backgroundLimited {
+                    Text("This installation can only wait about 30 seconds in the background, so go to Settings straight away.")
+                        .font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                cancel"""
+    new = """                if pairing.backgroundLimited {
+                    Text("iOS denied the continued pairing task, so the top code banner may not appear. The app may stop in the background after about 30 seconds. Check that the IPA's bundle/task identifiers match or import a pairing file.")
+                        .font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                Text("If Pair with Madeira is absent: allow Local Network for Steam Mobile in Settings, keep Wi-Fi enabled, restart pairing, and return here if the system never shows a code.")
+                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                cancel"""
+    src = replace_one(src, old, new, "JIT pairing troubleshooting on UI")
+    src = replace_one(src,
+        '    @Published private(set) var backgroundLimited = false',
+        '''    @Published private(set) var backgroundLimited = false
+    // Registration submission is not confirmation that Bonjour advertised us.
+    @Published private(set) var advertisingConfirmed = false
+    @Published private(set) var notificationNotice: String?''',
+        "JIT observable advertisement and notification evidence")
+    src = replace_one(src,
+        '''            { _, _, error, _, _, _, _ in
+                guard error != DNSServiceErrorType(kDNSServiceErr_NoError) else { return }
+                DispatchQueue.main.async { OnDevicePairing.shared.advertisingFailed(error) }
+            }, nil)''',
+        '''            { service, _, error, _, _, _, _ in
+                DispatchQueue.main.async {
+                    let pairing = OnDevicePairing.shared
+                    // Ignore callbacks from a cancelled/finished registration.
+                    guard pairing.active, service == pairing.registration else { return }
+                    if error == DNSServiceErrorType(kDNSServiceErr_NoError) {
+                        pairing.advertisingConfirmed = true
+                        pairing.log("Bonjour pairing advertisement confirmed by system")
+                    } else {
+                        pairing.advertisingFailed(error)
+                    }
+                }
+            }, nil)''', "JIT asynchronous Bonjour result")
+    src = replace_one(src,
+        '    private func stopAdvertising() {\n',
+        '    private func stopAdvertising() {\n        advertisingConfirmed = false\n',
+        "JIT clear cancelled advertisement evidence")
+    src = replace_one(src,
+        '        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }',
+        '''        notificationNotice = nil
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            let failed = error != nil
+            DispatchQueue.main.async {
+                OnDevicePairing.shared.notificationNotice = granted ? nil :
+                    (failed ? "Notification permission could not be checked. Return here to read the pairing code."
+                            : "Notifications are disabled. Allow notifications for Steam Mobile in Settings, or return here to read the pairing code. The background banner has separate requirements.")
+            }
+        }''', "JIT notification permission result")
+    src = replace_one(src,
+        '                if pairing.backgroundLimited {',
+        '''                Label(pairing.advertisingConfirmed
+                      ? "Bonjour advertisement confirmed. Waiting for you to select the host in Developer Mode."
+                      : "Waiting for Bonjour to confirm the pairing advertisement…",
+                      systemImage: pairing.advertisingConfirmed ? "antenna.radiowaves.left.and.right" : "network")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("The code appears after this iPhone connects to the pairing host. Advertising alone does not enable JIT.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let notice = pairing.notificationNotice {
+                    Text(notice).font(.footnote).foregroundStyle(.orange)
+                }
+                if pairing.backgroundLimited {''', "JIT truthful pairing status panel")
+    return src
+
+
+def patch_app_jit_registration(src):
+    old = """        _ = ResolutionChoices.screen
+    }"""
+    new = """        _ = ResolutionChoices.screen
+        // Steam Mobile JIT-001: register iOS pairing's background handler
+        // at application launch, before scenes appear, not on a later tap.
+        MainActor.assumeIsolated {
+            OnDevicePairing.shared.registerContinuedProcessingAtLaunch()
+        }
+    }"""
+    return replace_one(src, old, new, "JIT pairing app launch registration")
+
+
+def patch_fps_overlay(src):
+    """Keep 100 ms present samples but avoid 10 Hz SwiftUI State invalidations."""
+    old = """struct FPSOverlay: View {"""
+    new = """// Steam Mobile PERF-003: a stable reference store prevents the 100 ms
+// sampling timer from marking the entire overlay's SwiftUI view as dirty.
+// The visible present count / FPS still refresh every 250 ms.
+private final class SteamMobileFpsSampleStore {
+    var samples: [(t: CFAbsoluteTime, c: UInt64)] = []
+}
+
+struct FPSOverlay: View {"""
+    src = replace_one(src, old, new, "FPS overlay private reference sample store")
+    src = replace_one(
+        src,
+        '    @State private var samples: [(t: CFAbsoluteTime, c: UInt64)] = []',
+        '    @State private var sampleStore = SteamMobileFpsSampleStore()',
+        "FPS overlay samples non-observable",
+    )
+    src = replace_one(src, '        samples = [(now, c)]',
+                      '        sampleStore.samples = [(now, c)]', "FPS overlay reset")
+    old = """            samples.append((t, cur))
+            if samples.count > bufferCapacity { samples.removeFirst() }
+            presentCount = cur"""
+    new = """            sampleStore.samples.append((t, cur))
+            if sampleStore.samples.count > bufferCapacity { sampleStore.samples.removeFirst() }
+            // No @State publication here: avoid waking the SwiftUI view at 10 Hz."""
+    src = replace_one(src, old, new, "FPS 100 ms buffer without UI publish")
+    src = replace_one(src,
+        """        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+            fps = computeAdaptiveFPS()""",
+        """        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+            presentCount = madeira_get_present_count()
+            fps = computeAdaptiveFPS()""",
+        "FPS visible present display tick")
+    src = replace_one(src,
+        """    private func computeAdaptiveFPS() -> Double {
+        guard samples.count >= 2 else { return 0 }""",
+        """    private func computeAdaptiveFPS() -> Double {
+        let samples = sampleStore.samples
+        guard samples.count >= 2 else { return 0 }""",
+        "FPS adaptive window preserved")
+    return src
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--madeira", type=Path, required=True)
@@ -138,7 +408,11 @@ def main():
     args = ap.parse_args()
     targets = [
         ((args.dxmt or (args.madeira / "dxmt")) / "src/d3d9/d3d9_multithread.hpp", patch_dxmt),
-        (args.madeira / "app/Madeira/Winios/Winios.m", patch_winios)
+        (args.madeira / "app/Madeira/Winios/Winios.m", patch_winios),
+        (args.madeira / "app/Madeira/FEXBridge.mm", patch_fex_bridge),
+        (args.madeira / "app/Madeira/JITPairing.swift", patch_jit_pairing),
+        (args.madeira / "app/Madeira/MadeiraApp.swift", patch_app_jit_registration),
+        (args.madeira / "app/Madeira/FPSOverlay.swift", patch_fps_overlay)
     ]
     staged = []
     try:

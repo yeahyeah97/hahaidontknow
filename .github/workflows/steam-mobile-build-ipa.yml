@@ -1,7 +1,7 @@
 name: Steam Mobile - Build IPA v2 (signing fix + Xcode 27)
 on:
   push:
-    branches: [steam-mobile-engine-sm001]
+    branches: [steam-mobile-engine-sm001, codex/steam-mobile-sm001-native-build-fix-20261010]
     paths:
       - ".github/workflows/steam-mobile-build-ipa.yml"
       - "SteamMobile/**"
@@ -10,11 +10,16 @@ on:
 permissions:
   contents: read
 
+# Keep a running native build and its diagnostics when a follow-up is pushed.
+concurrency:
+  group: steam-mobile-native-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   native-engine-attempt:
     name: Native engine build attempt (experimental)
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: Verify Xcode environment
@@ -30,29 +35,336 @@ jobs:
           set -euo pipefail
           xcodebuild -downloadComponent MetalToolchain
           xcrun --find metal
-      - name: Fetch Madeira source and current DXMT implementation
+      - name: Fetch exact Madeira, Wine, DXMT, FEX, LLVM and FreeType revisions
         shell: bash
         run: |
           set -euo pipefail
-          git clone --quiet --depth 1 --branch main https://github.com/willfaust/Madeira.git "$RUNNER_TEMP/Madeira"
-          git clone --quiet --depth 1 --branch ios-port https://github.com/willfaust/dxmt.git "$RUNNER_TEMP/Madeira/dxmt"
-          git clone --quiet --depth 1 --branch ios-port-2607 https://github.com/willfaust/FEX.git "$RUNNER_TEMP/Madeira/FEX"
-          git -C "$RUNNER_TEMP/Madeira/FEX" submodule update --init --depth 1 External/fmt External/range-v3 External/unordered_dense
-          echo "Engine source fetched: Madeira + DXMT + FEX + required FEX headers"
+          python3 SteamMobile/tools/fetch_native_sources.py "$RUNNER_TEMP/Madeira"
+          python3 SteamMobile/tools/prepare_native_build.py "$RUNNER_TEMP/Madeira"
+      - name: Install native build host tools
+        run: brew install bison ninja llvm pkg-config
       - name: Apply genuine DXMT and Wine emulation patches
         shell: bash
         run: |
           set -euo pipefail
           python3 SteamMobile/tools/patch_native_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt" --apply
+          python3 SteamMobile/tools/patch_gamenative_achievements.py --madeira "$RUNNER_TEMP/Madeira"
           python3 SteamMobile/tests/verify_engine.py --madeira "$RUNNER_TEMP/Madeira" --dxmt "$RUNNER_TEMP/Madeira/dxmt"
-      - name: Prepare missing optional x64 CRT directory (diagnostic only)
+      - name: Preflight DXMT's generated AIR shader headers before costly LLVM build
+        timeout-minutes: 5
         shell: bash
         run: |
-          # The source requires this app resource even when the licensed
-          # Microsoft x64 DLLs are not available in the public checkout.
-          # This does NOT supply those DLLs or make a deliverable build.
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          OUT="$R/build/dxmt-ios/shader-headers"
+          mkdir -p "$OUT"
+          # Reproduce pinned DXMT meson's metalir/hexdump generators.
+          # This catches the exact airconv_context.cpp missing-header bug
+          # before running 30+ minutes of FEX/Wine/LLVM compilation.
+          for name in air_msad air_samplepos air_tessellation; do
+            xcrun -sdk macosx metal -std=metal3.1 --target=air64-apple-macos14.0 \
+              -c "$R/dxmt/src/airconv/shaders/$name.metal" -o "$OUT/$name.air"
+            xxd -n "$name" -i "$OUT/$name.air" "$OUT/$name.h"
+            test -s "$OUT/$name.air"
+            test -s "$OUT/$name.h"
+            grep -Fq "unsigned char $name[]" "$OUT/$name.h"
+            echo "$name.h generated and verified"
+          done
+          bash -n "$R/build/dxmt-ios/build.sh"
+      - name: Integrate Steam Mobile UI and build branded iOS app icon
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 SteamMobile/tools/patch_ui.py --madeira "$RUNNER_TEMP/Madeira"
+          python3 -m venv "$RUNNER_TEMP/SteamMobileIconVenv"
+          source "$RUNNER_TEMP/SteamMobileIconVenv/bin/activate"
+          python -m pip install --disable-pip-version-check pillow
+          python SteamMobile/tools/generate_app_icon.py "$RUNNER_TEMP/Madeira/app/Madeira/Assets.xcassets/AppIcon.appiconset"
+          python - <<'PY'
+          import json, os, plistlib
+          from PIL import Image
+          root = os.path.join(os.environ["RUNNER_TEMP"], "Madeira/app/Madeira/Assets.xcassets/AppIcon.appiconset")
+          c = json.load(open(os.path.join(root, "Contents.json")))
+          assert c["images"][0]["filename"] == "SteamMobile1024.png"
+          with Image.open(os.path.join(root, "SteamMobile1024.png")) as img:
+              assert img.size == (1024,1024) and img.mode == "RGB"
+          print("Steam Mobile iOS icon + asset catalog PASS")
+          plist_path = os.path.join(os.environ["RUNNER_TEMP"], "Madeira/app/Madeira/Info.plist")
+          with open(plist_path, "rb") as stream:
+              metadata = plistlib.load(stream)
+          metadata["SteamMobileSourceCommit"] = os.environ["GITHUB_SHA"]
+          with open(plist_path, "wb") as stream:
+              plistlib.dump(metadata, stream)
+          PY
+      - name: Build the real Madeira Dock host for Steam-owned games and downloads
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          T="$RUNNER_TEMP/steam-mobile-llvm-mingw.tar.xz"
+          curl --fail --location --retry 3 --retry-delay 3 --silent --show-error \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz \
+            -o "$T"
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  $T" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/steam-mobile-cross"
+          tar -xJf "$T" -C "$RUNNER_TEMP/steam-mobile-cross"
+          CROSS="$RUNNER_TEMP/steam-mobile-cross/llvm-mingw-20260421-ucrt-macos-universal/bin"
+          test -x "$CROSS/x86_64-w64-mingw32-clang"
+          LLVM_MINGW="$CROSS" bash "$R/build/madeira-dock/build.sh"
+          test -s "$R/app/Madeira/arm64ec-windows/dockhost.exe"
+          test -s "$R/app/Madeira/arm64ec-windows/dock-notices.txt"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, sys
+          sys.path.insert(0, 'SteamMobile/tools')
+          from inspect_binary import windows_dll
+          binary = Path(os.environ['RUNNER_TEMP']) / 'Madeira/app/Madeira/arm64ec-windows/dockhost.exe'
+          # A real 64-bit Windows PE console executable, not a .dll and not an empty placeholder.
+          data = binary.read_bytes()
+          assert data[:2] == b'MZ' and len(data) > 4096
+          assert data[int.from_bytes(data[60:64], 'little'):][:4] == bytes([0x50, 0x45, 0, 0])
+          print('Steam Mobile Dock native Windows host compiled:', len(data), 'bytes')
+          PY
+      - name: Parse patched iOS JIT pairing Swift before native linking
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Parse validates syntax of both modified Swift units even while
+          # unbundled upstream native libraries block full Xcode linking.
+          xcrun swiftc -frontend -parse \
+            "$RUNNER_TEMP/Madeira/app/Madeira/JITPairing.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraApp.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/FPSOverlay.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/Library.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/ContentView.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraDock.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/DockStartScreen.swift"
+      - name: Generate FEX headers and compile native iOS FEXCore
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Generated headers do not exist in the FEX source checkout.
+          # Compiling the actual targets generates ConfigValues.inl and
+          # ConfigOptions.inl, and their required static libraries.
+          R="$RUNNER_TEMP/Madeira"
+          # Upstream FEX Scripts/aarch64_fit_native.py requires packaging.
+          # Xcode 27's Python has neither packaging nor pkg_resources.
+          python3 -m venv "$RUNNER_TEMP/SteamMobilePython"
+          source "$RUNNER_TEMP/SteamMobilePython/bin/activate"
+          python -m pip install --disable-pip-version-check packaging
+          # Xcode 27 + CMake's iOS cross-compile reports an empty
+          # CMAKE_SYSTEM_PROCESSOR unless specified explicitly.
+          # Match upstream build/fex-ios/build.sh and set arm64 ourselves.
+          cmake -S "$R/FEX" -B "$R/FEX/build-ios" \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
+            -DTUNE_CPU=generic -DTUNE_ARCH=generic \
+            -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF \
+            -DBUILD_FEXCONFIG=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
+            -DENABLE_FEX_ALLOCATOR=OFF -DENABLE_ASSERTIONS=OFF \
+            -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=ON \
+            2>&1 | tee "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          bash "$R/build/fex-ios/build.sh" 2>&1 | tee -a "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          # Always defined by FEX, including allocator=OFF: contains the
+          # platform allocator hooks. The upstream script omits this target.
+          cmake --build "$R/FEX/build-ios" --target JemallocLibs 2>&1 | tee -a "$RUNNER_TEMP/SteamMobileFEXBuild.log"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigValues.inl"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/include/FEXCore/Config/ConfigOptions.inl"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore.a"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libFEXCore_Base.a"
+          test -s "$RUNNER_TEMP/Madeira/FEX/build-ios/FEXCore/Source/libJemallocLibs.a"
+      - name: Build LGPL FFmpeg iOS static libraries from verified upstream tarball
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Upstream script verifies SHA256 and configures only LGPL codecs.
+          bash "$RUNNER_TEMP/Madeira/build/ffmpeg/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobileFFmpegBuild.log"
+          for lib in avformat avcodec swresample avutil; do
+            test -s "$RUNNER_TEMP/Madeira/app/Madeira/lib${lib}.a"
+          done
+      - name: Build real Rust JIT pairing support for iPhone ARM64
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-ios
+          bash "$RUNNER_TEMP/Madeira/build/rppairing-ios/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobilePairingBuild.log"
+          test -s "$RUNNER_TEMP/Madeira/app/Madeira/libmadeira_rppairing.a"
+      - name: Build Wine native libraries from complete source
+        id: wine_native
+        timeout-minutes: 45
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash SteamMobile/tools/build_wine_native.sh "$RUNNER_TEMP/Madeira" 2>&1 | tee "$RUNNER_TEMP/SteamMobileWineBuild.log"
+      - name: Build LLVM for iOS and link the patched DXMT archive
+        id: dxmt_native
+        timeout-minutes: 90
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash SteamMobile/tools/build_dxmt_native.sh "$RUNNER_TEMP/Madeira" 2>&1 | tee "$RUNNER_TEMP/SteamMobileDXMTBuild.log"
+      - name: Record actual dependency inputs and toolchain versions
+        run: python3 SteamMobile/tools/record_native_build.py "$RUNNER_TEMP/Madeira" "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json"
+      - name: Bundle verified Wine Mono .NET compatibility runtime for legacy launchers
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          bash "$R/build/wine-mono/fetch.sh"
+          test -s "$R/build/wine-mono/wine-mono-11.0.0/bin/libmono-2.0-x86.dll"
+          test -s "$R/build/wine-mono/wine-mono-11.0.0/lib/mono/4.5/mscorlib.dll"
+          test -s "$R/build/wine-mono/COPYING"
+          echo "Wine Mono downloaded and SHA-256 verified by pinned upstream fetch.sh; Xcode bundles it in Debug."
+      - name: Verify genuine DX9/DX11 and experimental DX12 engine components
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          # Presence and matching binary provenance, NOT a claim that AAA DX12 games work.
+          for item in \
+             arm64ec-windows/d3d9.dll \
+             arm64ec-windows/d3d11.dll \
+             arm64ec-windows/dxgi.dll \
+             arm64ec-windows/d3d12.dll \
+             arm64ec-windows/d3d12core.dll \
+             d3d12/libmetalirconverter.dylib; do
+            test -s "$R/app/Madeira/$item" || {
+              echo "::error::Missing real graphics runtime component: $item"
+              exit 1
+            }
+          done
+          bash "$R/build/madeira-d3d12/deps.sh"
+          echo "::notice::DX12 converter and binaries verified; Cyberpunk/FFVII compatibility remains unproven until actual D3D12 game execution."
+
+      - name: Stage complete GPL and exception licenses before real Xcode link
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          bash "$R/build/stage-licenses.sh"
+          test -s "$R/app/Madeira/licenses/LICENSE-MADEIRA-GPL-3.0.txt"
+          test -s "$R/app/Madeira/licenses/LICENSE-MADEIRA-EXCEPTION.txt"
+          cmp "$R/COPYING" "$R/app/Madeira/licenses/LICENSE-MADEIRA-GPL-3.0.txt"
+          cmp "$R/LICENSE-EXCEPTION.md" "$R/app/Madeira/licenses/LICENSE-MADEIRA-EXCEPTION.txt"
+      - name: Diagnose Xcode Swift compile before incomplete native link
+        id: native_link
+        timeout-minutes: 12
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          # Diagnostic only: Swift parsing is not type-checking. Run the
+          # genuine Xcode build far enough to reveal Swift / asset errors.
+          # We expect missing Wine/DXMT inputs to prevent the final link.
+          # The resource folder itself is absent from the clean source.
+          # Make an EMPTY directory solely for the diagnostic compile,
+          # then delete it. We do NOT create pretend DLLs or release the app.
           mkdir -p "$RUNNER_TEMP/Madeira/app/Madeira/x86_64-vcruntime"
+          # GitHub's bash default is -e: preserve the return code before
+          # reporting errors, even when xcodebuild exits with status 65.
+          rc=0
+          xcodebuild -project "$RUNNER_TEMP/Madeira/app/Madeira.xcodeproj" \
+            -scheme Madeira -configuration Debug -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/SteamMobileDiagnosticDerived" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            LD_GENERATE_MAP_FILE=YES \
+            build > "$RUNNER_TEMP/SteamMobileTypecheck.log" 2>&1 || rc=$?
+          rmdir "$RUNNER_TEMP/Madeira/app/Madeira/x86_64-vcruntime" || true
+          echo "Xcode diagnostic exit code: $rc"
+          grep -E 'error:|warning:|SwiftCompile|SwiftEmitModule|CompileAssetCatalog|BUILD FAILED' "$RUNNER_TEMP/SteamMobileTypecheck.log" | tail -95 || true
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::warning::Diagnostic compile was unsuccessful: genuine native dependencies are still absent."
+          fi
+          exit "$rc"
+      - name: Export linked app for local runtime assembly
+        if: steps.wine_native.outcome == 'success' && steps.dxmt_native.outcome == 'success' && steps.native_link.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This is a build input, never an installable IPA. The user's
+          # Microsoft runtime files are added and checked on their computer.
+          bash "$RUNNER_TEMP/Madeira/build/stage-licenses.sh"
+          APP="$RUNNER_TEMP/SteamMobileDiagnosticDerived/Build/Products/Debug-iphoneos/Madeira.app"
+          cp -R "$RUNNER_TEMP/Madeira/app/Madeira/licenses" "$APP/"
+          mkdir -p "$RUNNER_TEMP/SteamMobileNativeHandoff"
+          (cd "$(dirname "$APP")" && zip -qry "$RUNNER_TEMP/SteamMobileNativeHandoff/native-app.zip" Madeira.app)
+          python3 SteamMobile/tools/record_native_handoff.py \
+            "$RUNNER_TEMP/SteamMobileNativeHandoff" "$RUNNER_TEMP/SteamMobileDiagnosticDerived"
+          cp "$RUNNER_TEMP/SteamMobileProvenance/native-inputs.json" "$RUNNER_TEMP/SteamMobileNativeHandoff/"
+          cp "$RUNNER_TEMP/SteamMobileTypecheck.log" "$RUNNER_TEMP/SteamMobileNativeHandoff/"
+      - name: Upload linked app build input for local assembly
+        if: steps.wine_native.outcome == 'success' && steps.dxmt_native.outcome == 'success' && steps.native_link.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamMobile_native_app_REQUIRES_LOCAL_RUNTIME
+          path: ${{ runner.temp }}/SteamMobileNativeHandoff
+          if-no-files-found: error
+      - name: Require genuinely built native archives; route licensed CRT to local handoff
+        id: release_prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          # CI must NEVER publish a partially built archive or a stock IPA.
+          test '${{ steps.wine_native.outcome }}' = success
+          test '${{ steps.dxmt_native.outcome }}' = success
+          test '${{ steps.native_link.outcome }}' = success
+          for rel in \
+            app/Madeira/libdxmt_combined.a \
+            app/Madeira/libntdll_unix.a \
+            app/Madeira/libwineserver.a \
+            app/Madeira/libwin32u_unix.a \
+            app/Madeira/libmadeira_rppairing.a \
+            app/Madeira/libavformat.a \
+            app/Madeira/libavcodec.a \
+            app/Madeira/libswresample.a \
+            app/Madeira/libavutil.a; do
+            if [[ ! -s "$R/$rel" ]]; then
+              echo "::error file=$rel::Required real iOS native library missing"
+              exit 1
+            fi
+          done
+          test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-handoff.json"
+          test -s "$RUNNER_TEMP/SteamMobileNativeHandoff/native-app.zip"
+          test -s "$R/app/Madeira/arm64ec-windows/dockhost.exe"
+          test -s "$R/app/Madeira/arm64ec-windows/dock-notices.txt"
+          # Integrated .NET Framework launcher runtime must be inside linked
+          # app rather than a configured-but-empty Xcode copy.
+          python3 - <<'PY'
+          import os, pathlib, zipfile
+          zpath=pathlib.Path(os.environ['RUNNER_TEMP'])/'SteamMobileNativeHandoff/native-app.zip'
+          with zipfile.ZipFile(zpath) as z:
+              required = ['Madeira.app/wine-mono/COPYING',
+                          'Madeira.app/wine-mono/bin/libmono-2.0-x86.dll',
+                          'Madeira.app/wine-mono/lib/mono/4.5/mscorlib.dll']
+              for name in required:
+                  if name not in z.namelist() or z.getinfo(name).file_size < 100:
+                      raise SystemExit('Missing official Wine Mono runtime from linked native app: '+name)
+          print('Full native Wine Mono .NET runtime verified in IPA handoff.')
+          PY
+          bash "$R/build/stage-licenses.sh"
+          # Microsoft DLLs are supplied/licensed on the user's PC, not uploaded
+          # to GitHub. A verified *linked native app* is the sole CI deliverable
+          # when there are no CRT files on the macOS runner.
+          if [[ -d "$R/app/Madeira/x86_64-vcruntime" ]] && \
+             [[ -n "$(find "$R/app/Madeira/x86_64-vcruntime" -type f -iname '*.dll' -print -quit)" ]]; then
+            echo "crt_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "crt_present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Native app linked and exported. Add the 12 hash-pinned Microsoft CRT DLLs using SteamMobile/tools/assemble_local_ipa.py on the user's authorized computer."
+          fi
       - name: Attempt complete Debug device build with Xcode
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         shell: bash
         run: |
           set -o pipefail
@@ -63,6 +375,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee "$RUNNER_TEMP/SteamMobileNativeBuild.log"
       - name: Package native patched IPA ONLY after successful Xcode build
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -75,7 +388,15 @@ jobs:
           cp -R "$APP" "$RUNNER_TEMP/nativeipa/Payload/"
           (cd "$RUNNER_TEMP/nativeipa" && zip -qry "$RUNNER_TEMP/native_unrepacked.ipa" Payload)
           python3 SteamMobile/tools/repack_ipa_for_signing.py             "$RUNNER_TEMP/native_unrepacked.ipa"             "$GITHUB_WORKSPACE/SteamMobile_Engine_SM001_unsigned.ipa"             --bundle-id com.steammobile.engine --name "Steam Mobile"
+      - name: Prove this is a patched native IPA, not a renamed Madeira release
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 SteamMobile/tools/verify_optimized_ipa.py \
+            SteamMobile_Engine_SM001_unsigned.ipa --bundle-id com.steammobile.engine
       - name: Upload actually compiled native IPA
+        if: steps.release_prerequisites.outputs.crt_present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: SteamMobile_Engine_SM001_unsigned
@@ -86,7 +407,11 @@ jobs:
         shell: bash
         run: |
           test ! -f "$RUNNER_TEMP/SteamMobileNativeBuild.log" || cp "$RUNNER_TEMP/SteamMobileNativeBuild.log" "$GITHUB_WORKSPACE/SteamMobile_native_build.log"
-          echo "See Madeira docs/BUILDING.md for the missing submodules and native toolchains." > SteamMobile_native_build_readme.txt
+          test ! -f "$RUNNER_TEMP/SteamMobileFEXBuild.log" || cp "$RUNNER_TEMP/SteamMobileFEXBuild.log" "$GITHUB_WORKSPACE/SteamMobile_fex_build.log"
+          test ! -f "$RUNNER_TEMP/SteamMobileFFmpegBuild.log" || cp "$RUNNER_TEMP/SteamMobileFFmpegBuild.log" "$GITHUB_WORKSPACE/SteamMobile_ffmpeg_build.log"
+          test ! -f "$RUNNER_TEMP/SteamMobilePairingBuild.log" || cp "$RUNNER_TEMP/SteamMobilePairingBuild.log" "$GITHUB_WORKSPACE/SteamMobile_pairing_build.log"
+          test ! -f "$RUNNER_TEMP/SteamMobileTypecheck.log" || cp "$RUNNER_TEMP/SteamMobileTypecheck.log" "$GITHUB_WORKSPACE/SteamMobile_typecheck.log"
+          echo "See upstream Madeira docs/BUILDING.md: extra native libraries/toolchains and licensed CRT DLLs are required. The baseline IPA does NOT contain SM-001 patches." > SteamMobile_native_build_readme.txt
       - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -94,10 +419,47 @@ jobs:
           name: SteamMobile_native_build_diagnostics
           path: |
             SteamMobile_native_build.log
+            SteamMobile_fex_build.log
+            SteamMobile_ffmpeg_build.log
+            SteamMobile_pairing_build.log
+            SteamMobile_typecheck.log
             SteamMobile_native_build_readme.txt
+          if-no-files-found: warn
+      - name: Collect native dependency compiler diagnostics and provenance
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/SteamMobileDependencyDiagnostics"
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          root = temp / 'Madeira'
+          out = temp / 'SteamMobileDependencyDiagnostics'
+          for pattern in ('build/**/*.err', 'build/**/err-*.txt', 'build/gnutls-ios/obj/*.log',
+                          'wine/build-macos/config.log', 'toolchains/*-build/CMakeCache.txt',
+                          'toolchains/*-build/CMakeFiles/CMakeConfigureLog.yaml'):
+              for source in root.glob(pattern):
+                  if source.is_file():
+                      dest = out / source.relative_to(root)
+                      dest.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(source, dest)
+          for source in temp.glob('SteamMobile*Build.log'):
+              shutil.copy2(source, out / source.name)
+          PY
+      - name: Upload source dependency diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamMobile_dependency_build_evidence
+          path: |
+            ${{ runner.temp }}/SteamMobileDependencyDiagnostics
+            ${{ runner.temp }}/SteamMobileProvenance
           if-no-files-found: warn
 
   playable-baseline-ipa:
+    # Preserve the proven upstream baseline, but avoid redundant 140MB
+    # downloads when testing an experimental feature branch.
+    if: github.ref == 'refs/heads/steam-mobile-engine-sm001' || github.event_name == 'workflow_dispatch'
     name: Produce separate Steam Mobile baseline IPA (upstream engine)
     runs-on: macos-15
     timeout-minutes: 20

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SM-001 host verification: real DXMT header compiles and recursive locking works."""
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,14 +13,46 @@ args = ap.parse_args()
 
 dxmt_header = args.dxmt / "src/d3d9/d3d9_multithread.hpp"
 ios_bridge = args.madeira / "app/Madeira/Winios/Winios.m"
+fex_bridge = args.madeira / "app/Madeira/FEXBridge.mm"
+jit_pairing = args.madeira / "app/Madeira/JITPairing.swift"
+jit_app = args.madeira / "app/Madeira/MadeiraApp.swift"
+fps_overlay = args.madeira / "app/Madeira/FPSOverlay.swift"
 header = dxmt_header.read_text()
 bridge = ios_bridge.read_text()
+fex = fex_bridge.read_text()
+pairing = jit_pairing.read_text()
+app = jit_app.read_text()
+fps_ui = fps_overlay.read_text()
+assert "SteamMobileFpsSampleStore" in fps_ui
+assert "@State private var sampleStore = SteamMobileFpsSampleStore()" in fps_ui
+assert 'let samples = sampleStore.samples' in fps_ui
+assert "sampleStore.samples.append((t, cur))" in fps_ui
+assert 'presentCount = madeira_get_present_count()' in fps_ui
+assert "@State private var samples:" not in fps_ui
+assert "registerContinuedProcessingAtLaunch()" in app
+assert "OnDevicePairing.shared.registerContinuedProcessingAtLaunch()" in app
+assert "background pairing handler registered at launch" in pairing
+assert "registered == identifier" in pairing
+assert "DNSServiceSetDispatchQueue(ref, .main)" in pairing
+assert "Bonjour pairing advertisement registered" in pairing
+assert "Bonjour pairing advertisement confirmed by system" in pairing
+assert "service == pairing.registration" in pairing
+assert "Notifications are disabled." in pairing
+assert "Advertising alone does not enable JIT." in pairing
+assert "iOS denied the continued pairing task" in pairing
 assert "Steam Mobile SM-001: owner recursion" in header
 assert "std::memory_order_relaxed" in header
 assert "std::memory_order_acquire" in header
+assert "STEAM_MOBILE_D9_LOW_SPIN" in header
+assert "pause_budget" in header
 assert "Steam Mobile SM-001: bounded FIFO drain" in bridge
 assert 'getenv("MADEIRA_INPUT_TRACE")' in bridge
 assert "winios_input_event_t batch[64]" in bridge
+assert "Steam Mobile SM-002: no synchronous os_log" in fex
+assert 'getenv("STEAM_MOBILE_JIT_TRACE")' in fex
+assert "if (trace_allocations)" in fex
+assert 'fex_log("JIT pool exhausted:' in fex
+assert "g_jit_pool_offset.fetch_add" in fex
 
 with tempfile.TemporaryDirectory() as tmp:
     d = Path(tmp)
@@ -41,7 +74,13 @@ namespace dxmt { struct Logger { template<typename T> static void warn(T&&) {} }
 """)
     (d / "util_env.hpp").write_text("""#pragma once
 #include <string>
-namespace dxmt::env { inline std::string getEnvVar(const char *) { return ""; } }
+#include <cstdlib>
+namespace dxmt::env {
+inline std::string getEnvVar(const char *key) {
+    const char *v = std::getenv(key);
+    return v ? std::string(v) : std::string();
+}
+}
 """)
     (d / "util_string.hpp").write_text("""#pragma once
 #include <string>
@@ -72,4 +111,8 @@ int main() {
            "-o",str(d/"d9-lock-test")]
     subprocess.run(cmd,check=True)
     subprocess.run([str(d/"d9-lock-test")],check=True,timeout=20)
-print("SM-001 patched DXMT and Winios source verification PASS")
+    # Exercise both lock contention settings; no claims about iPhone FPS.
+    env = os.environ.copy()
+    env["STEAM_MOBILE_D9_LOW_SPIN"] = "1"
+    subprocess.run([str(d/"d9-lock-test")],check=True,timeout=20,env=env)
+print("SM-001/2 patched DXMT, Winios and FEX source verification PASS")

@@ -5,6 +5,11 @@ on:
     paths:
       - 'SteamMobile/**'
       - '.github/workflows/steam-mobile-engine-ci.yml'
+  pull_request:
+    branches: [steam-mobile-engine-sm001]
+    paths:
+      - 'SteamMobile/**'
+      - '.github/workflows/steam-mobile-engine-ci.yml'
   workflow_dispatch:
 jobs:
   dx9-engine:
@@ -12,6 +17,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Validate clean native build plans
+        run: python3 SteamMobile/tests/test_native_build.py
+      - name: Validate capture comparison arithmetic and invalid data rejection
+        run: python3 SteamMobile/tests/test_capture_comparison.py
       - name: Fetch pinned Madeira and DXMT engine sources
         shell: bash
         run: |
@@ -19,6 +28,25 @@ jobs:
           mkdir -p /tmp/steam-mobile/Madeira/app/Madeira/Winios
           mkdir -p /tmp/steam-mobile/dxmt/src/d3d9
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/Winios/Winios.m -o /tmp/steam-mobile/Madeira/app/Madeira/Winios/Winios.m
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/FEXBridge.mm -o /tmp/steam-mobile/Madeira/app/Madeira/FEXBridge.mm
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/JITPairing.swift -o /tmp/steam-mobile/Madeira/app/Madeira/JITPairing.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/MadeiraApp.swift -o /tmp/steam-mobile/Madeira/app/Madeira/MadeiraApp.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/FPSOverlay.swift -o /tmp/steam-mobile/Madeira/app/Madeira/FPSOverlay.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/Library.swift -o /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/MadeiraDock.swift -o /tmp/steam-mobile/Madeira/app/Madeira/MadeiraDock.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/ContentView.swift -o /tmp/steam-mobile/Madeira/app/Madeira/ContentView.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/DockStartScreen.swift -o /tmp/steam-mobile/Madeira/app/Madeira/DockStartScreen.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/SteamOwnedLibrary.swift -o /tmp/steam-mobile/Madeira/app/Madeira/SteamOwnedLibrary.swift
+          mkdir -p /tmp/steam-mobile/Madeira/app/Madeira/SwiftSteam/Core
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/SwiftSteam/Core/SteamProtocol.swift -o /tmp/steam-mobile/Madeira/app/Madeira/SwiftSteam/Core/SteamProtocol.swift
+          python3 SteamMobile/tools/patch_ui.py --madeira /tmp/steam-mobile/Madeira
+          python3 SteamMobile/tools/patch_gamenative_achievements.py --madeira /tmp/steam-mobile/Madeira
+          grep -q 'case clientGetUserStats = 818' /tmp/steam-mobile/Madeira/app/Madeira/SwiftSteam/Core/SteamProtocol.swift
+          grep -q 'struct SteamMobileAchievement' /tmp/steam-mobile/Madeira/app/Madeira/SteamOwnedLibrary.swift
+          grep -q 'steamMobileAchievements(for appID:' /tmp/steam-mobile/Madeira/app/Madeira/SteamOwnedLibrary.swift
+          grep -q 'struct SteamMobilePerformanceTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
+          grep -q 'struct SteamMobileLaunchersTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
+          grep -q 'struct SteamMobileAchievementsTab' /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/dxmt/db546ee466ad50ec6463edb5fa183de11db43761/src/d3d9/d3d9_multithread.hpp -o /tmp/steam-mobile/dxmt/src/d3d9/d3d9_multithread.hpp
       - name: Dry-run native patch checks
         run: |
@@ -26,9 +54,15 @@ jobs:
       - name: Apply native engine patches to disposable upstream copies
         run: |
           python3 SteamMobile/tools/patch_native_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt --apply
-      - name: Compile patched DXMT D3D9 lock with real header and stress test threads
+      - name: Compile patched DXMT lock and check Wine/FEX hot-path guards
         run: |
           python3 SteamMobile/tests/verify_engine.py --madeira /tmp/steam-mobile/Madeira --dxmt /tmp/steam-mobile/dxmt
+      - name: Check native UI and icon generator Python syntax
+        run: python3 -m py_compile SteamMobile/tools/patch_ui.py SteamMobile/tools/generate_app_icon.py SteamMobile/tools/patch_gamenative_achievements.py
+      - name: Reject fake/partial optimized IPA fixtures
+        run: python3 SteamMobile/tests/test_package_guard.py
+      - name: Test JIT pairing identifiers survive unsigned IPA repackaging
+        run: python3 SteamMobile/tests/test_repack_pairing.py
       - name: Run host-only DX9 recursive-lock microbenchmark
         run: |
           c++ -std=c++17 -O3 -pthread SteamMobile/tests/bench_dx9_lock.cpp -o /tmp/steam-d9-lock-bench
