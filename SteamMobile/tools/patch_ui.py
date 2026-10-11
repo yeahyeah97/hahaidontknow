@@ -703,19 +703,19 @@ def patch(src):
         "Do not duplicate Steam account catalog")
     src = src.replace("Copy a game's folder into Madeira › wine › drive_c", "Copy a game's folder into Steam Mobile › wine › drive_c")
     src = src.replace("Restart Madeira to start another game", "Restart Steam Mobile to start another game")
-    # Prefer conservative synchronization for the two Borderlands editions
+    # Prefer conservative synchronization for known crash-on-start games
     # until the user explicitly chooses otherwise. Other games retain their
     # prior defaults; this changes no owned games, accounts or Steam entitlements.
     src = once(src,
         '''            setenv("MADEIRA_FASTSYNC", fastSync == false ? "0" : mode, 1)''',
-        '''            let startupSafe = steamAppID == 8980 || steamAppID == 729040
+        '''            let startupSafe = [8980, 729040, 49520, 1462040, 1091500].contains(steamAppID ?? -1)
             let useFastSync = fastSync ?? !startupSafe
             setenv("MADEIRA_FASTSYNC", useFastSync ? mode : "0", 1)''',
         "Conservative Borderlands launch sync defaults")
     src = once(src,
         '''Toggle("Fast synchronization", isOn: Binding(get: { entry.fastSync ?? true }, set: { entry.fastSync = $0 }))''',
         '''Toggle("Fast synchronization", isOn: Binding(
-                            get: { entry.fastSync ?? !(entry.steamAppID == 8980 || entry.steamAppID == 729040) },
+                            get: { entry.fastSync ?? ![8980, 729040, 49520, 1462040, 1091500].contains(entry.steamAppID ?? -1) },
                             set: { entry.fastSync = $0 }))''',
         "Make default safe sync state visible and user reversible")
     # An explicit, reversible per-game compatibility baseline. Never force
