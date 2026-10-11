@@ -833,7 +833,7 @@ def main():
                 cv_src,
                 '''            let chosen = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder)?.launchIndex }
             let launchOption = chosen ?? 0''',
-                '''            let defaultChoice = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder) }
+                r'''            let defaultChoice = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder) }
             let alternate: SteamDirectStart.Choice? = (game.id == 8980 || game.id == 729040)
                 ? options.flatMap { entries in
                     SteamDirectStart.choose(entries.filter { option in
