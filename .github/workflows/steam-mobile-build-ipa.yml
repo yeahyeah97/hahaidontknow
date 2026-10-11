@@ -137,7 +137,10 @@ jobs:
             "$RUNNER_TEMP/Madeira/app/Madeira/JITPairing.swift" \
             "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraApp.swift" \
             "$RUNNER_TEMP/Madeira/app/Madeira/FPSOverlay.swift" \
-            "$RUNNER_TEMP/Madeira/app/Madeira/Library.swift"
+            "$RUNNER_TEMP/Madeira/app/Madeira/Library.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/ContentView.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/MadeiraDock.swift" \
+            "$RUNNER_TEMP/Madeira/app/Madeira/DockStartScreen.swift"
       - name: Generate FEX headers and compile native iOS FEXCore
         timeout-minutes: 25
         shell: bash
