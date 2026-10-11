@@ -703,6 +703,21 @@ def patch(src):
         "Do not duplicate Steam account catalog")
     src = src.replace("Copy a game's folder into Madeira › wine › drive_c", "Copy a game's folder into Steam Mobile › wine › drive_c")
     src = src.replace("Restart Madeira to start another game", "Restart Steam Mobile to start another game")
+    # Prefer conservative synchronization for the two Borderlands editions
+    # until the user explicitly chooses otherwise. Other games retain their
+    # prior defaults; this changes no owned games, accounts or Steam entitlements.
+    src = once(src,
+        '''            setenv("MADEIRA_FASTSYNC", fastSync == false ? "0" : mode, 1)''',
+        '''            let startupSafe = steamAppID == 8980 || steamAppID == 729040
+            let useFastSync = fastSync ?? !startupSafe
+            setenv("MADEIRA_FASTSYNC", useFastSync ? mode : "0", 1)''',
+        "Conservative Borderlands launch sync defaults")
+    src = once(src,
+        '''Toggle("Fast synchronization", isOn: Binding(get: { entry.fastSync ?? true }, set: { entry.fastSync = $0 }))''',
+        '''Toggle("Fast synchronization", isOn: Binding(
+                            get: { entry.fastSync ?? !(entry.steamAppID == 8980 || entry.steamAppID == 729040) },
+                            set: { entry.fastSync = $0 }))''',
+        "Make default safe sync state visible and user reversible")
     # An explicit, reversible per-game compatibility baseline. Never force
     # risky engine flags or automatically downgrade a user's successful profile.
     # This helps test whether a splash-then-exit is related to sync/upscaling/
@@ -806,5 +821,43 @@ def main():
             "Explain early game process exit separately from Steam licence or sign-in failures",
         )
         screen.write_text(screen_src, encoding="utf-8")
+        # A subset of Steam products publish separate launch entries for a
+        # configuration utility and a playable game. For the two Borderlands
+        # editions, prefer another *Steam-authored* valid Windows game option
+        # only if one exists on disk; otherwise keep Steam's default exactly.
+        # No direct-launch shortcut or license bypass is created.
+        cv = args.madeira / "app/Madeira/ContentView.swift"
+        if cv.is_file():
+            cv_src = cv.read_text(encoding="utf-8")
+            cv_src = once(
+                cv_src,
+                '''            let chosen = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder)?.launchIndex }
+            let launchOption = chosen ?? 0''',
+                '''            let defaultChoice = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder) }
+            let alternate: SteamDirectStart.Choice? = (game.id == 8980 || game.id == 729040)
+                ? options.flatMap { entries in
+                    SteamDirectStart.choose(entries.filter { option in
+                        let filename = option.executable
+                            .replacingOccurrences(of: "\\\\", with: "/")
+                            .split(separator: "/").last.map(String.init)?.lowercased() ?? ""
+                        return !filename.contains("launcher") &&
+                               !filename.contains("config") &&
+                               !filename.contains("setup") &&
+                               !filename.contains("settings")
+                    }, installFolder: installFolder)
+                } : nil
+            let chosen = (alternate ?? defaultChoice)?.launchIndex
+            let launchOption = chosen ?? 0''',
+                "Prefer official Steam game launch option over configuration utility for Borderlands",
+            )
+            cv_src = once(
+                cv_src,
+                '''            LogStore.shared.log("[madeira-dock] launch option \(launchOption)\(chosen == nil ? " (none chosen: the default)" : "")")''',
+                '''            let selectedProgram = (alternate ?? defaultChoice)?.program
+                .split(separator: "/").last.map(String.init) ?? "steam-default"
+            LogStore.shared.log("[steam-mobile-launch] app=\(game.id) launch-option=\(launchOption) program=\(selectedProgram) mode=\(alternate == nil ? "normal" : "play-option")")''',
+                "Make selected game launch program visible in non-sensitive diagnostics",
+            )
+            cv.write_text(cv_src, encoding="utf-8")
         print("Steam Mobile SwiftUI + early-exit diagnostics integrated")
 if __name__=="__main__": main()
