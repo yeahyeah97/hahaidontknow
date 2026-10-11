@@ -33,6 +33,8 @@ jobs:
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/MadeiraApp.swift -o /tmp/steam-mobile/Madeira/app/Madeira/MadeiraApp.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/FPSOverlay.swift -o /tmp/steam-mobile/Madeira/app/Madeira/FPSOverlay.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/Library.swift -o /tmp/steam-mobile/Madeira/app/Madeira/Library.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/MadeiraDock.swift -o /tmp/steam-mobile/Madeira/app/Madeira/MadeiraDock.swift
+          curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/DockStartScreen.swift -o /tmp/steam-mobile/Madeira/app/Madeira/DockStartScreen.swift
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/SteamOwnedLibrary.swift -o /tmp/steam-mobile/Madeira/app/Madeira/SteamOwnedLibrary.swift
           mkdir -p /tmp/steam-mobile/Madeira/app/Madeira/SwiftSteam/Core
           curl -fL --retry 3 --silent --show-error https://raw.githubusercontent.com/willfaust/Madeira/48f976429c189f8396e23d251d8a82f43c705922/app/Madeira/SwiftSteam/Core/SteamProtocol.swift -o /tmp/steam-mobile/Madeira/app/Madeira/SwiftSteam/Core/SteamProtocol.swift
