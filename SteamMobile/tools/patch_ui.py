@@ -853,9 +853,10 @@ def main():
             cv_src = once(
                 cv_src,
                 '''            LogStore.shared.log("[madeira-dock] launch option \(launchOption)\(chosen == nil ? " (none chosen: the default)" : "")")''',
-                '''            let selectedProgram = (alternate ?? defaultChoice)?.program
-                .split(separator: "/").last.map(String.init) ?? "steam-default"
-            LogStore.shared.log("[steam-mobile-launch] app=\(game.id) launch-option=\(launchOption) program=\(selectedProgram) mode=\(alternate == nil ? "normal" : "play-option")")''',
+                '''            let launchFile = (alternate ?? defaultChoice)?.program ?? "steam-default"
+            let selectedProgram = launchFile.split(separator: "/").last.map(String.init) ?? "steam-default"
+            let launchMode = alternate == nil ? "normal" : "play-option"
+            LogStore.shared.log("[steam-mobile-launch] app=\(game.id) launch-option=\(launchOption) program=\(selectedProgram) mode=\(launchMode)")''',
                 "Make selected game launch program visible in non-sensitive diagnostics",
             )
             cv.write_text(cv_src, encoding="utf-8")
