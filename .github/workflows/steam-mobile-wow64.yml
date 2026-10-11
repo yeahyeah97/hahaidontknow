@@ -1,0 +1,126 @@
+name: Steam Mobile - WoW64 32-bit game compatibility
+on:
+  push:
+    branches: [codex/steam-mobile-sm001-native-build-fix-20261010]
+    paths: [".github/workflows/steam-mobile-wow64.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-32bit-windows-runtime:
+    name: Rebuild Wine x86 and DXMT i386 from pinned sources
+    runs-on: xcode-27
+    timeout-minutes: 175
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Xcode and Metal toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --find metal
+      - name: Install Wine host and DXMT build tools
+        run: brew install bison ninja meson llvm pkg-config
+      - name: Fetch exact pinned Madeira, Wine, DXMT, and FEX commits
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          python3 SteamMobile/tools/fetch_native_sources.py "$R"
+          test -s "$R/build/wine-i386/build.sh"
+          test -s "$R/docs/WOW64.md"
+          test -s "$R/app/Madeira/aarch64-windows/wow64.dll"
+          test -s "$R/app/Madeira/aarch64-windows/wow64win.dll"
+          test -s "$R/app/Madeira/aarch64-windows/xtajit.dll"
+      - name: Fetch SHA256-locked llvm-mingw Windows cross compiler
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          T="$RUNNER_TEMP/llvm-mingw-ucrt-x86-macos-universal.tar.xz"
+          curl --fail --location --retry 3 --retry-delay 3 --silent --show-error \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz -o "$T"
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  $T" | shasum -a 256 -c -
+          mkdir -p "$R/toolchains"
+          tar -xJf "$T" -C "$R/toolchains"
+          test -x "$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin/i686-w64-mingw32-clang"
+      - name: Configure clean Wine host headers
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          export PATH="$(brew --prefix bison)/bin:$(brew --prefix llvm)/bin:$PATH"
+          mkdir -p "$R/wine/build-macos"
+          (
+            cd "$R/wine/build-macos"
+            ../configure --enable-archs=none --without-mingw --without-x --disable-tests
+            make -j4 include/all
+          )
+          test -s "$R/wine/build-macos/include/config.h"
+      - name: Build real Wine i386 and DXMT i386 DLL farms
+        timeout-minutes: 120
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          export PATH="$(brew --prefix bison)/bin:$(brew --prefix llvm)/bin:$PATH"
+          JOBS=4 bash "$R/build/wine-i386/build.sh" 2>&1 | tee "$RUNNER_TEMP/SteamMobileWoW64Build.log"
+      - name: Validate Windows 32-bit runtime architecture and DXMT import coverage
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, struct, shutil, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'Madeira'
+          farm = root / 'app/Madeira/i386-windows'
+          required = ('ntdll.dll','kernel32.dll','kernelbase.dll','user32.dll',
+                      'gdi32.dll','d3d9.dll','d3d9-emulated.dll','dxgi.dll',
+                      'd3d11.dll','winemetal.dll','ole32.dll','msvcrt.dll')
+          for name in required:
+              p=farm/name
+              if not p.is_file() or p.stat().st_size <= 4096:
+                  raise SystemExit('Incomplete 32-bit Wine/DXMT runtime: missing '+name)
+          manifest = {}
+          for p in sorted(farm.iterdir()):
+              if not p.is_file() or p.suffix.lower() not in ('.dll','.exe','.drv','.cpl','.acm','.ax','.ocx'):
+                  continue
+              b=p.read_bytes()
+              if len(b)<512 or b[:2]!=b'MZ':
+                  raise SystemExit('Invalid Windows PE file: '+p.name)
+              off=struct.unpack_from('<I',b,60)[0]
+              if off+24>len(b) or b[off:off+4]!=bytes([80,69,0,0]):
+                  raise SystemExit('Malformed Windows PE: '+p.name)
+              machine=struct.unpack_from('<H',b,off+4)[0]
+              if machine!=0x14c:
+                  raise SystemExit('Not genuine i386 Windows PE: '+p.name)
+              manifest[p.name]={'size':len(b),'sha256':hashlib.sha256(b).hexdigest()}
+          if len(manifest)<50:
+              raise SystemExit('Partial i386 runtime: only '+str(len(manifest))+' PE modules')
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'SteamMobileWoW64Handoff'
+          out.mkdir(exist_ok=True)
+          shutil.copytree(farm,out/'i386-windows')
+          result={'schema':1,'status':'verified-32bit-PE-source-build;device-untested',
+                  'repository':os.environ['GITHUB_REPOSITORY'],
+                  'commit':os.environ['GITHUB_SHA'],
+                  'run_id':os.environ['GITHUB_RUN_ID'],
+                  'wine_source_commit':subprocess.check_output(['git','-C',str(root/'wine'),'rev-parse','HEAD'],text=True).strip(),
+                  'dxmt_source_commit':subprocess.check_output(['git','-C',str(root/'dxmt'),'rev-parse','HEAD'],text=True).strip(),
+                  'count':len(manifest),'files':manifest}
+          (out/'wow64-manifest.json').write_text(json.dumps(result,indent=2)+'\n')
+          print('SUCCESS:',len(manifest),'compiled real i386 Windows PE binaries')
+          PY
+      - name: Upload genuine 32-bit compatibility build (not an IPA)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamMobile_WoW64_i386_compiled
+          path: ${{ runner.temp }}/SteamMobileWoW64Handoff
+          if-no-files-found: error
+      - name: Preserve first compiler or linker error
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamMobile_WoW64_build_diagnostics
+          path: |
+            ${{ runner.temp }}/SteamMobileWoW64Build.log
+            ${{ runner.temp }}/Madeira/wine/build-i386/madeira-i386-build.log
+            ${{ runner.temp }}/Madeira/dxmt/build-pe-i386/meson-logs/meson-log.txt
+          if-no-files-found: warn
