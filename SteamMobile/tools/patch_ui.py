@@ -838,7 +838,7 @@ def main():
                 ? options.flatMap { entries in
                     SteamDirectStart.choose(entries.filter { option in
                         let filename = option.executable
-                            .replacingOccurrences(of: "\\\\", with: "/")
+                            .replacingOccurrences(of: "\\", with: "/")
                             .split(separator: "/").last.map(String.init)?.lowercased() ?? ""
                         return !filename.contains("launcher") &&
                                !filename.contains("config") &&
