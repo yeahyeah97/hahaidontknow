@@ -805,6 +805,12 @@ def main():
             '''        if fields["launch-game-ended"] == "1" {
             return "Steam started the game, but it exited before displaying gameplay. Open the diagnostics log."
         }
+        if fields["ceg-result"] == "-5" {
+            return "Steam's genuine Client Service could not register. Protected executable preparation stopped. Check the service installer log; do not bypass Steam protection."
+        }
+        if fields["launch-client-error"] == "45" {
+            return "Steam refused this launch (code 45). Check Steam's launch option and any publisher launcher before changing graphics settings."
+        }
         if fields["launch-client-error"] == "0" { return "The game is starting. Waiting for its window…" }''',
             "Do not display an indefinite waiting message when the guest process exited",
         )
@@ -822,8 +828,8 @@ def main():
         )
         screen.write_text(screen_src, encoding="utf-8")
         # A subset of Steam products publish separate launch entries for a
-        # configuration utility and a playable game. For the two Borderlands
-        # editions, prefer another *Steam-authored* valid Windows game option
+        # configuration utility and a playable game. For known failing games
+        # (Borderlands 1/2, Cyberpunk, FFVII), prefer a *Steam-authored* Windows game option
         # only if one exists on disk; otherwise keep Steam's default exactly.
         # No direct-launch shortcut or license bypass is created.
         cv = args.madeira / "app/Madeira/ContentView.swift"
@@ -834,7 +840,7 @@ def main():
                 '''            let chosen = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder)?.launchIndex }
             let launchOption = chosen ?? 0''',
                 r'''            let defaultChoice = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder) }
-            let alternate: SteamDirectStart.Choice? = (game.id == 8980 || game.id == 729040)
+            let alternate: SteamDirectStart.Choice? = [8980, 729040, 49520, 1091500, 1462040].contains(game.id)
                 ? options.flatMap { entries in
                     SteamDirectStart.choose(entries.filter { option in
                         let filename = option.executable
