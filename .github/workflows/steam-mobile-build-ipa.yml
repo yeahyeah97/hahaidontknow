@@ -221,6 +221,27 @@ jobs:
           test -s "$R/build/wine-mono/wine-mono-11.0.0/lib/mono/4.5/mscorlib.dll"
           test -s "$R/build/wine-mono/COPYING"
           echo "Wine Mono downloaded and SHA-256 verified by pinned upstream fetch.sh; Xcode bundles it in Debug."
+      - name: Verify genuine DX9/DX11 and experimental DX12 engine components
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="$RUNNER_TEMP/Madeira"
+          # Presence and matching binary provenance, NOT a claim that AAA DX12 games work.
+          for item in \
+             arm64ec-windows/d3d9.dll \
+             arm64ec-windows/d3d11.dll \
+             arm64ec-windows/dxgi.dll \
+             arm64ec-windows/d3d12.dll \
+             arm64ec-windows/d3d12core.dll \
+             d3d12/libmetalirconverter.dylib; do
+            test -s "$R/app/Madeira/$item" || {
+              echo "::error::Missing real graphics runtime component: $item"
+              exit 1
+            }
+          done
+          bash "$R/build/madeira-d3d12/deps.sh"
+          echo "::notice::DX12 converter and binaries verified; Cyberpunk/FFVII compatibility remains unproven until actual D3D12 game execution."
+
       - name: Stage complete GPL and exception licenses before real Xcode link
         shell: bash
         run: |
