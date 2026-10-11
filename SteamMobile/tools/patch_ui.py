@@ -703,6 +703,42 @@ def patch(src):
         "Do not duplicate Steam account catalog")
     src = src.replace("Copy a game's folder into Madeira › wine › drive_c", "Copy a game's folder into Steam Mobile › wine › drive_c")
     src = src.replace("Restart Madeira to start another game", "Restart Steam Mobile to start another game")
+    # An explicit, reversible per-game compatibility baseline. Never force
+    # risky engine flags or automatically downgrade a user's successful profile.
+    # This helps test whether a splash-then-exit is related to sync/upscaling/
+    # CPU/GPU emulation switches; it cannot solve missing DLLs/DRM.
+    src = once(src,
+        '''                Section {
+                    Toggle("Reduced-precision x87", isOn: $entry.reducedX87)''',
+        '''                if entry.desktop != true {
+                    Section {
+                        Button {
+                            entry.fastSync = false
+                            entry.semaphoreFastPath = false
+                            entry.frameGeneration = nil
+                            entry.metalFXUpscale = nil
+                            entry.avx = nil
+                            entry.reportNVIDIA = nil
+                            entry.reducedX87 = false
+                            entry.cpuCount = nil
+                            entry.anisotropyLimit = nil
+                            entry.liveLogs = true
+                            entry.fpsMode = 1
+                            model.save(entry)
+                        } label: {
+                            Label("Apply safe launch settings", systemImage: "shield.lefthalf.filled")
+                        }
+                        Text("Disables experimental frame generation, MetalFX, AVX emulation and fast sync for this game. Enables live diagnostic logs. Your installed game and saves are unchanged. Quit the current Wine session, then launch again.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let appID = entry.steamAppID {
+                            Text("Steam game \(appID): the official Steam client still checks the license. A launcher crash, missing runtime or incompatible DRM cannot be fixed by performance settings alone.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } header: { Text("Steam Mobile • Startup Rescue") }
+                }
+                Section {
+                    Toggle("Reduced-precision x87", isOn: $entry.reducedX87)''',
+        "Expose real per-game safe-start diagnostic action")
     src = once(src,
         '''        .onReceive(controller.commands) { command in
             if selected == nil, !browser, !onboarding.presented, command == "tab" { switchTab(to: 1 - tab) }
