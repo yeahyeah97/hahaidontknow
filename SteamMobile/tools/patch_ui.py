@@ -703,6 +703,23 @@ def patch(src):
         "Do not duplicate Steam account catalog")
     src = src.replace("Copy a game's folder into Madeira › wine › drive_c", "Copy a game's folder into Steam Mobile › wine › drive_c")
     src = src.replace("Restart Madeira to start another game", "Restart Steam Mobile to start another game")
+    # The supplied Cyberpunk 2077 diagnostic log has
+    # "madeira-d3d12: gate off". Cyberpunk (1091500) and FFVII Remake
+    # (1462040) normally require DX12. Activate the already-shipped
+    # experimental DX12 runtime only for those game IDs. The per-game
+    # advanced config is appended AFTER this line, so an explicit
+    # "d3d12 = 0" still wins and provides a reversible fallback.
+    src = once(src,
+        '''    var gameConfigText: String? {
+        var lines: [String] = []
+        if let metalFXUpscale''',
+        '''    var gameConfigText: String? {
+        var lines: [String] = []
+        if [1091500, 1462040].contains(steamAppID ?? -1) {
+            lines.append("d3d12 = 1")
+        }
+        if let metalFXUpscale''',
+        "Automatically enable optional DX12 only for installed DX12 game profiles")
     # Prefer conservative synchronization for known crash-on-start games
     # until the user explicitly chooses otherwise. Other games retain their
     # prior defaults; this changes no owned games, accounts or Steam entitlements.
